@@ -196,7 +196,7 @@ def test_the_write_filters_say_what_they_keep():
     assert "If NName = '' Then Exit;" in keep          # no net: not on a listed net
     assert "Pos(',' + UpperCase(NName) + ',', ',' + UpperCase(Nets) + ',') = 0" in keep
     assert "If Not Sel Then Exit;" in keep
-    assert "(BR.Right < BX1) Or (BR.Left > BX2) Or (BR.Top < BY1) Or (BR.Bottom > BY2)" in keep
+    assert "(BR_Right < BX1) Or (BR_Left > BX2) Or (BR_Top < BY1) Or (BR_Bottom > BY2)" in keep
     name = _fn("Function GmNameOk(")
     assert "If Copy(Mask, Length(Mask), 1) = '*' Then" in name
 

@@ -230,9 +230,11 @@ def test_footprint_primitives_are_placed_relative_to_the_footprint():
                  "Lib_AddFootprintTrack", "Lib_AddFootprintTracks",
                  "Lib_AddFootprintArc", "Lib_AddFootprintText"):
         body = _decommented(_body(text, func))
-        writes = re.findall(r"(?:Pad|Track|Arc|Text)\.\w*"
+        # A justified text's anchor (AnchorX / AnchorY) is the placement
+        # its XLocation / YLocation are then taken from.
+        writes = re.findall(r"(?:(?:Pad|Track|Arc|Text)\.\w*"
                             r"(?:X|Y|X1|Y1|X2|Y2|XCenter|YCenter|"
-                            r"XLocation|YLocation)\s*:=\s*([^;]+);", body)
+                            r"XLocation|YLocation)|Anchor[XY])\s*:=\s*([^;]+);", body)
         # CoordFromUnits converts mils or millimetres; either way the
         # result is a length, and it still needs the footprint's origin.
         placement = [w for w in writes

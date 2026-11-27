@@ -50,9 +50,9 @@ def test_mirror_flag_is_written_in_place_and_only_on_a_text():
 
 def test_the_text_is_moved_back_by_its_bounding_box_shift():
     body = _body(_code(), "Procedure SetTextMirrorInPlace(")
-    before = body.index("Before := Txt.BoundingRectangle;")
+    before = body.index("Before_Ok := PcbTextBox(Txt,")
     flip = body.index("Txt.MirrorFlag := Mirror;")
-    after = body.index("After := Txt.BoundingRectangle;")
-    move = body.index("Txt.MoveByXY(Before.Left - After.Left, Before.Bottom - After.Bottom);")
+    after = body.index("After_Ok := PcbTextBox(Txt,")
+    move = body.index("Txt.MoveByXY(Before_Left - After_Left, Before_Bottom - After_Bottom);")
     assert before < flip < after < move
     assert body.index("Txt.BeginModify;") < flip < body.index("Txt.EndModify;") < after

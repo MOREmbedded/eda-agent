@@ -1074,7 +1074,8 @@ Var
     Region : IPCB_Region;
     Checked, Violations : Integer;
     LayerStr, ItemsJson, EntryJson : String;
-    BBox : TCoordRect;
+    BBox_Left, BBox_Bottom, BBox_Right, BBox_Top : Integer;
+    BBox_Ok : Boolean;
     AtX, AtY : TCoord;
     First, IsInvalid : Boolean;
 Begin
@@ -1111,8 +1112,8 @@ Begin
                         { GeometricPolygon is undeclared in this script binding;
                           flag regions whose bounding box is degenerate (zero
                           width or height = a zero / unset-area region). }
-                        BBox := Region.BoundingRectangle;
-                        If ((BBox.X2 - BBox.X1) <= 0) Or ((BBox.Y2 - BBox.Y1) <= 0) Then
+                        BBox_Ok := RegionVertexBox(Region, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+                        If ((BBox_Right - BBox_Left) <= 0) Or ((BBox_Top - BBox_Bottom) <= 0) Then
                             IsInvalid := True;
                     Except
                         IsInvalid := True;
@@ -1128,8 +1129,8 @@ Begin
                         { script past any Try.                               }
                         AtX := 0; AtY := 0;
                         Try
-                            BBox := Obj.BoundingRectangle;
-                            AtX := BBox.X1; AtY := BBox.Y1;
+                            BBox_Ok := PcbBox(Obj, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+                            AtX := BBox_Left; AtY := BBox_Bottom;
                         Except End;
                         If Not First Then ItemsJson := ItemsJson + ',';
                         First := False;
@@ -1442,7 +1443,8 @@ Var
     Layer : IPCB_LayerObject;
     Via : IPCB_Via;
     Obj, Prim : IPCB_Primitive;
-    BBox : TCoordRect;
+    BBox_Left, BBox_Bottom, BBox_Right, BBox_Top : Integer;
+    BBox_Ok : Boolean;
     Connected, Checked, Violations : Integer;
     LayerId : Integer;
     NetName, ItemsJson, EntryJson : String;
@@ -1485,7 +1487,7 @@ Begin
                 Via := Obj;
                 Inc(Checked);
                 Connected := 0;
-                BBox := Via.BoundingRectangle;
+                BBox_Ok := PcbBox(Via, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
                 Layer := Stack.FirstLayer;
                 While Layer <> Nil Do
                 Begin
@@ -1501,8 +1503,8 @@ Begin
                                     SIter.AddFilter_ObjectSet(MkSet(eTrackObject,
                                         eArcObject, ePadObject, eFillObject,
                                         eRegionObject));
-                                    SIter.AddFilter_Area(BBox.Left, BBox.Bottom,
-                                                          BBox.Right, BBox.Top);
+                                    SIter.AddFilter_Area(BBox_Left, BBox_Bottom,
+                                                          BBox_Right, BBox_Top);
                                     SIter.AddFilter_LayerSet(MkSet(LayerId));
                                     Prim := SIter.FirstPCBObject;
                                     While (Prim <> Nil) And (Not HitOnLayer) Do
@@ -4044,7 +4046,8 @@ Var
     Obj : IPCB_Primitive;
     Pad : IPCB_Pad;
     Track : IPCB_Track;
-    Rect : TCoordRect;
+    Rect_Left, Rect_Bottom, Rect_Right, Rect_Top : Integer;
+    Rect_Ok : Boolean;
     PadLayer, LayerId, Checked, Violations : Integer;
     PadX, PadY, RL, RR, RT, RB : TCoord;
     DesStr, NetStr, LayerStr, PinStr, ItemsJson, EntryJson : String;
@@ -4128,9 +4131,9 @@ Begin
                                 { script past any Try.                       }
                                 RL := 0; RR := 0; RT := 0; RB := 0;
                                 Try
-                                    Rect := Pad.BoundingRectangleOnLayer(LayerId);
-                                    RL := Rect.Left; RR := Rect.Right;
-                                    RT := Rect.Top; RB := Rect.Bottom;
+                                    Rect_Ok := PcbBox(Pad, Rect_Left, Rect_Bottom, Rect_Right, Rect_Top); If Not Rect_Ok Then NoBox(0);
+                                    RL := Rect_Left; RR := Rect_Right;
+                                    RT := Rect_Top; RB := Rect_Bottom;
                                 Except End;
 
                                 TrackTouches := False;
@@ -4193,9 +4196,9 @@ Begin
                     { SMD pad: check tracks on the pad's own layer.            }
                     RL := 0; RR := 0; RT := 0; RB := 0;
                     Try
-                        Rect := Pad.BoundingRectangleOnLayer(PadLayer);
-                        RL := Rect.Left; RR := Rect.Right;
-                        RT := Rect.Top; RB := Rect.Bottom;
+                        Rect_Ok := PcbBox(Pad, Rect_Left, Rect_Bottom, Rect_Right, Rect_Top); If Not Rect_Ok Then NoBox(0);
+                        RL := Rect_Left; RR := Rect_Right;
+                        RT := Rect_Top; RB := Rect_Bottom;
                     Except End;
 
                     TrackTouches := False;
@@ -4566,7 +4569,8 @@ Var
     Obj, Member : IPCB_Primitive;
     Net : IPCB_Net;
     Members : TStringList;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     T, TypeId, State, Narrow, Limit, Checked, StaleIdx, StaleNet, Mismatch, Walked, Indexed, Shown : Integer;
     Types, Name, ItemsJson, CountsJson, Response, NetName, Owner : String;
     Lo, Hi : TCoord;
@@ -4641,7 +4645,7 @@ Begin
                         Inc(StaleIdx);
                         If Shown < Limit Then
                         Begin
-                            BR := Obj.BoundingRectangle;
+                            BR_Ok := PcbBox(Obj, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
                             Owner := '';
                             If Obj.InComponent Then Owner := 'component'
                             Else If Obj.InPolygon Then Owner := 'polygon'
@@ -4652,10 +4656,10 @@ Begin
                                 + JsonStr('type', Name) + ','
                                 + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
                                 + JsonStr('owner', Owner) + ','
-                                + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
-                                + JsonFloat('bottom', CoordToMilsF(BR.Bottom)) + ','
-                                + JsonFloat('right', CoordToMilsF(BR.Right)) + ','
-                                + JsonFloat('top', CoordToMilsF(BR.Top)));
+                                + JsonFloat('left', CoordToMilsF(BR_Left)) + ','
+                                + JsonFloat('bottom', CoordToMilsF(BR_Bottom)) + ','
+                                + JsonFloat('right', CoordToMilsF(BR_Right)) + ','
+                                + JsonFloat('top', CoordToMilsF(BR_Top)));
                             Inc(Shown);
                         End;
                     End;
@@ -4668,7 +4672,7 @@ Begin
                             Inc(StaleNet);
                             If Shown < Limit Then
                             Begin
-                                BR := Obj.BoundingRectangle;
+                                BR_Ok := PcbBox(Obj, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
                                 NetName := '';
                                 Try NetName := Net.Name; Except End;
                                 If ItemsJson <> '' Then ItemsJson := ItemsJson + ',';
@@ -4677,8 +4681,8 @@ Begin
                                     + JsonStr('type', Name) + ','
                                     + JsonStr('net', NetName) + ','
                                     + JsonStr('layer', LayerDisplayName(Obj.Layer)) + ','
-                                    + JsonFloat('left', CoordToMilsF(BR.Left)) + ','
-                                    + JsonFloat('bottom', CoordToMilsF(BR.Bottom)));
+                                    + JsonFloat('left', CoordToMilsF(BR_Left)) + ','
+                                    + JsonFloat('bottom', CoordToMilsF(BR_Bottom)));
                                 Inc(Shown);
                             End;
                         End;

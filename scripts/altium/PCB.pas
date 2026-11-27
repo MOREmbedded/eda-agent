@@ -2906,7 +2906,8 @@ Var
     RuleName, P1Desc, P2Desc, P1Net, P2Net, P1Type, P2Type : String;
     P1X, P1Y, P2X, P2Y, VX, VY : Double;
     P1Layer, P2Layer, VLayer : String;
-    BBox : TCoordRect;
+    BBox_Left, BBox_Bottom, BBox_Right, BBox_Top : Integer;
+    BBox_Ok : Boolean;
     Prim : IPCB_Primitive;
 Begin
     Result := '{';
@@ -2919,9 +2920,9 @@ Begin
     { Violation's own bounding rectangle -- usable as a "go here" hint.    }
     VX := 0; VY := 0; VLayer := '';
     Try
-        BBox := Violation.BoundingRectangle;
-        VX := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
-        VY := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
+        BBox_Ok := PcbBox(Violation, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+        VX := CoordToMilsF((BBox_Left + BBox_Right) Div 2);
+        VY := CoordToMilsF((BBox_Bottom + BBox_Top) Div 2);
     Except End;
     Try VLayer := LayerDisplayName(Violation.Layer); Except End;
     Result := Result + ',"x_mils":' + FloatToJsonStr(VX);
@@ -2937,9 +2938,9 @@ Begin
             Try If Prim.Net <> Nil Then P1Net := Prim.Net.Name; Except End;
             Try P1Type := IntToStr(Prim.ObjectId); Except End;
             Try
-                BBox := Prim.BoundingRectangle;
-                P1X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
-                P1Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
+                BBox_Ok := PcbBox(Prim, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+                P1X := CoordToMilsF((BBox_Left + BBox_Right) Div 2);
+                P1Y := CoordToMilsF((BBox_Bottom + BBox_Top) Div 2);
             Except End;
             Try P1Layer := LayerDisplayName(Prim.Layer); Except End;
         End;
@@ -2962,9 +2963,9 @@ Begin
             Try If Prim.Net <> Nil Then P2Net := Prim.Net.Name; Except End;
             Try P2Type := IntToStr(Prim.ObjectId); Except End;
             Try
-                BBox := Prim.BoundingRectangle;
-                P2X := CoordToMilsF((BBox.Left + BBox.Right) Div 2);
-                P2Y := CoordToMilsF((BBox.Bottom + BBox.Top) Div 2);
+                BBox_Ok := PcbBox(Prim, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+                P2X := CoordToMilsF((BBox_Left + BBox_Right) Div 2);
+                P2Y := CoordToMilsF((BBox_Bottom + BBox_Top) Div 2);
             Except End;
             Try P2Layer := LayerDisplayName(Prim.Layer); Except End;
         End;
@@ -3173,7 +3174,8 @@ Var
     GrpIter : IPCB_GroupIterator;
     Comp : IPCB_Component;
     Prim : IPCB_Primitive;
-    BBox, PrimBBox, PlacementBBox, BodyBox : TCoordRect;
+    BBox_Left, BBox_Bottom, BBox_Right, BBox_Top, PrimBBox_Left, PrimBBox_Bottom, PrimBBox_Right, PrimBBox_Top, PlacementBBox_Left, PlacementBBox_Bottom, PlacementBBox_Right, PlacementBBox_Top, BodyBox_Left, BodyBox_Bottom, BodyBox_Right, BodyBox_Top : Integer;
+    BBox_Ok, PrimBBox_Ok, PlacementBBox_Ok, BodyBox_Ok : Boolean;
     JsonItems, Designator, Footprint, LayerStr : String;
     CommentStr, SrcDesignator, SrcUniqueId, UniqueIdStr, BodyJson : String;
     First, HasPlacementBBox : Boolean;
@@ -3252,18 +3254,18 @@ Begin
             While Prim <> Nil Do
             Begin
                 Try
-                    PrimBBox := Prim.BoundingRectangle;
+                    PrimBBox_Ok := PcbBox(Prim, PrimBBox_Left, PrimBBox_Bottom, PrimBBox_Right, PrimBBox_Top); If Not PrimBBox_Ok Then NoBox(0);
                     If Not HasPlacementBBox Then
                     Begin
-                        PlacementBBox := PrimBBox;
+                        PlacementBBox_Left := PrimBBox_Left; PlacementBBox_Bottom := PrimBBox_Bottom; PlacementBBox_Right := PrimBBox_Right; PlacementBBox_Top := PrimBBox_Top; PlacementBBox_Ok := PrimBBox_Ok;
                         HasPlacementBBox := True;
                     End
                     Else
                     Begin
-                        If PrimBBox.X1 < PlacementBBox.X1 Then PlacementBBox.X1 := PrimBBox.X1;
-                        If PrimBBox.Y1 < PlacementBBox.Y1 Then PlacementBBox.Y1 := PrimBBox.Y1;
-                        If PrimBBox.X2 > PlacementBBox.X2 Then PlacementBBox.X2 := PrimBBox.X2;
-                        If PrimBBox.Y2 > PlacementBBox.Y2 Then PlacementBBox.Y2 := PrimBBox.Y2;
+                        If PrimBBox_Left < PlacementBBox_Left Then PlacementBBox_Left := PrimBBox_Left;
+                        If PrimBBox_Bottom < PlacementBBox_Bottom Then PlacementBBox_Bottom := PrimBBox_Bottom;
+                        If PrimBBox_Right > PlacementBBox_Right Then PlacementBBox_Right := PrimBBox_Right;
+                        If PrimBBox_Top > PlacementBBox_Top Then PlacementBBox_Top := PrimBBox_Top;
                     End;
                 Except
                     { A primitive that will not give its box is skipped.
@@ -3283,24 +3285,28 @@ Begin
         BBoxX1 := 0; BBoxY1 := 0; BBoxX2 := 0; BBoxY2 := 0;
         BBoxW := 0; BBoxH := 0;
         Try
-            BBox := Comp.BoundingRectangle;
-            BBoxX1 := CoordToMilsF(BBox.X1);
-            BBoxY1 := CoordToMilsF(BBox.Y1);
-            BBoxX2 := CoordToMilsF(BBox.X2);
-            BBoxY2 := CoordToMilsF(BBox.Y2);
+            BBox_Ok := PcbBox(Comp, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
+            BBoxX1 := CoordToMilsF(BBox_Left);
+            BBoxY1 := CoordToMilsF(BBox_Bottom);
+            BBoxX2 := CoordToMilsF(BBox_Right);
+            BBoxY2 := CoordToMilsF(BBox_Top);
             BBoxW := BBoxX2 - BBoxX1;
             BBoxH := BBoxY2 - BBoxY1;
         Except End;
-        If Not HasPlacementBBox Then PlacementBBox := BBox;
+        If Not HasPlacementBBox Then
+        Begin
+            PlacementBBox_Left := BBox_Left; PlacementBBox_Bottom := BBox_Bottom;
+            PlacementBBox_Right := BBox_Right; PlacementBBox_Top := BBox_Top;
+        End;
         { The same box without the part's designator and comment, which can }
         { sit far from it.                                                 }
         BodyJson := '';
         Try
-            BodyBox := Comp.BoundingRectangleNoNameComment;
-            BodyJson := ',"bbox_no_name_comment":{"x1":' + FloatToJsonStr(CoordToMilsF(BodyBox.X1))
-                + ',"y1":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y1))
-                + ',"x2":' + FloatToJsonStr(CoordToMilsF(BodyBox.X2))
-                + ',"y2":' + FloatToJsonStr(CoordToMilsF(BodyBox.Y2)) + '}';
+            BodyBox_Ok := PcbBoxNoText(Comp, BodyBox_Left, BodyBox_Bottom, BodyBox_Right, BodyBox_Top); If Not BodyBox_Ok Then NoBox(0);
+            BodyJson := ',"bbox_no_name_comment":{"x1":' + FloatToJsonStr(CoordToMilsF(BodyBox_Left))
+                + ',"y1":' + FloatToJsonStr(CoordToMilsF(BodyBox_Bottom))
+                + ',"x2":' + FloatToJsonStr(CoordToMilsF(BodyBox_Right))
+                + ',"y2":' + FloatToJsonStr(CoordToMilsF(BodyBox_Top)) + '}';
         Except BodyJson := ''; End;
 
         JsonItems := JsonItems + '{"designator":"' + EscapeJsonString(Designator) + '",'
@@ -3318,12 +3324,12 @@ Begin
             + '"bbox":{"x1":' + FloatToJsonStr(BBoxX1) + ',"y1":' + FloatToJsonStr(BBoxY1)
             + ',"x2":' + FloatToJsonStr(BBoxX2) + ',"y2":' + FloatToJsonStr(BBoxY2)
             + ',"width":' + FloatToJsonStr(BBoxW) + ',"height":' + FloatToJsonStr(BBoxH) + '},'
-            + '"placement_bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.X1))
-            + ',"y1":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.Y1))
-            + ',"x2":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.X2))
-            + ',"y2":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.Y2))
-            + ',"width":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.X2 - PlacementBBox.X1))
-            + ',"height":' + FloatToJsonStr(CoordToMilsF(PlacementBBox.Y2 - PlacementBBox.Y1)) + '}'
+            + '"placement_bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Left))
+            + ',"y1":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Bottom))
+            + ',"x2":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Right))
+            + ',"y2":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Top))
+            + ',"width":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Right - PlacementBBox_Left))
+            + ',"height":' + FloatToJsonStr(CoordToMilsF(PlacementBBox_Top - PlacementBBox_Bottom)) + '}'
             + BodyJson + '}';
         Inc(Count);
         Comp := Iterator.NextPCBObject;
@@ -3365,11 +3371,14 @@ End;
 {..............................................................................}
 
 Procedure PCB_ComponentPlacementBBox(Comp : IPCB_Component;
-    Var PlacementBBox : TCoordRect; Var HasPlacementBBox : Boolean);
+    Var PB_Left : Integer; Var PB_Bottom : Integer; Var PB_Right : Integer; Var PB_Top : Integer;
+    Var HasPlacementBBox : Boolean);
 Var
     GrpIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
-    PrimBBox : TCoordRect;
+    P_Left, P_Bottom, P_Right, P_Top : Integer;
+    P_Ok : Boolean;
+    Grp : IPCB_Group;
 Begin
     HasPlacementBBox := False;
     GrpIter := Comp.GroupIterator_Create;
@@ -3379,31 +3388,19 @@ Begin
         Prim := GrpIter.FirstPCBObject;
         While Prim <> Nil Do
         Begin
-            Try
-                PrimBBox := Prim.BoundingRectangle;
-                If Not HasPlacementBBox Then
-                Begin
-                    PlacementBBox := PrimBBox;
-                    HasPlacementBBox := True;
-                End
-                Else
-                Begin
-                    If PrimBBox.X1 < PlacementBBox.X1 Then PlacementBBox.X1 := PrimBBox.X1;
-                    If PrimBBox.Y1 < PlacementBBox.Y1 Then PlacementBBox.Y1 := PrimBBox.Y1;
-                    If PrimBBox.X2 > PlacementBBox.X2 Then PlacementBBox.X2 := PrimBBox.X2;
-                    If PrimBBox.Y2 > PlacementBBox.Y2 Then PlacementBBox.Y2 := PrimBBox.Y2;
-                End;
-            Except
-                { A primitive that will not give its box is skipped.
-                  PrimBBox is a local and the result is a reported
-                  bounding box, not a change to the design. }
-            End;
+            If PcbLeafBox(Prim, P_Left, P_Bottom, P_Right, P_Top) Then
+                BoxGrow(HasPlacementBBox, PB_Left, PB_Bottom, PB_Right, PB_Top, P_Left, P_Bottom, P_Right, P_Top);
             Prim := GrpIter.NextPCBObject;
         End;
     Finally
         Comp.GroupIterator_Destroy(GrpIter);
     End;
-    If Not HasPlacementBBox Then PlacementBBox := Comp.BoundingRectangle;
+    { No copper or outline: the whole component, texts included. }
+    If Not HasPlacementBBox Then
+    Begin
+        Grp := Comp;
+        P_Ok := PcbGroupBox(Grp, True, PB_Left, PB_Bottom, PB_Right, PB_Top);
+    End;
 End;
 
 Function PCB_CheckPlacementCollision(Params : String; RequestId : String) : String;
@@ -3416,7 +3413,8 @@ Var
     Margin : Double;
     NewRot, CurRot, RotDelta : Double;
     HasRot : Boolean;
-    BBoxCur, BBoxOther : TCoordRect;
+    BBoxCur_Left, BBoxCur_Bottom, BBoxCur_Right, BBoxCur_Top, BBoxOther_Left, BBoxOther_Bottom, BBoxOther_Right, BBoxOther_Top : Integer;
+    BBoxCur_Ok, BBoxOther_Ok : Boolean;
     Width, Height, NewW, NewH : Integer;
     OffsetX, OffsetY : Integer;
     NewBBoxX1, NewBBoxY1, NewBBoxX2, NewBBoxY2 : Integer;
@@ -3475,13 +3473,13 @@ Begin
 
     { Ignore designator/comment strings: they are not physical placement
       geometry and otherwise make tiny passives appear hundreds of mils wide. }
-    PCB_ComponentPlacementBBox(Comp, BBoxCur, HasPlacementBBox);
+    PCB_ComponentPlacementBBox(Comp, BBoxCur_Left, BBoxCur_Bottom, BBoxCur_Right, BBoxCur_Top, HasPlacementBBox);
     If HasPlacementBBox Then TargetBasis := 'footprint_body'
     Else TargetBasis := 'component_rect_including_text';
-    Width := BBoxCur.X2 - BBoxCur.X1;
-    Height := BBoxCur.Y2 - BBoxCur.Y1;
-    OffsetX := ((BBoxCur.X1 + BBoxCur.X2) Div 2) - Comp.x;
-    OffsetY := ((BBoxCur.Y1 + BBoxCur.Y2) Div 2) - Comp.y;
+    Width := BBoxCur_Right - BBoxCur_Left;
+    Height := BBoxCur_Top - BBoxCur_Bottom;
+    OffsetX := ((BBoxCur_Left + BBoxCur_Right) Div 2) - Comp.x;
+    OffsetY := ((BBoxCur_Bottom + BBoxCur_Top) Div 2) - Comp.y;
 
     If SwapWH Then
     Begin
@@ -3577,12 +3575,12 @@ Begin
         Begin
             OtherLayer := '';
             Try OtherLayer := LayerDisplayName(Other.Layer); Except End;
-            PCB_ComponentPlacementBBox(Other, BBoxOther, HasOtherBBox);
+            PCB_ComponentPlacementBBox(Other, BBoxOther_Left, BBoxOther_Bottom, BBoxOther_Right, BBoxOther_Top, HasOtherBBox);
             If HasOtherBBox Then BasisStr := 'footprint_body'
             Else BasisStr := 'component_rect_including_text';
 
-            Overlap := (NewBBoxX1 <= BBoxOther.X2) And (NewBBoxX2 >= BBoxOther.X1)
-                And (NewBBoxY1 <= BBoxOther.Y2) And (NewBBoxY2 >= BBoxOther.Y1);
+            Overlap := (NewBBoxX1 <= BBoxOther_Right) And (NewBBoxX2 >= BBoxOther_Left)
+                And (NewBBoxY1 <= BBoxOther_Top) And (NewBBoxY2 >= BBoxOther_Bottom);
 
             If Overlap Then
             Begin
@@ -3592,10 +3590,10 @@ Begin
                     '{"designator":"' + EscapeJsonString(OtherDes) +
                     '","layer":"' + EscapeJsonString(OtherLayer) +
                     '","bbox_basis":"' + BasisStr +
-                    '","bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(BBoxOther.X1)) +
-                    ',"y1":' + FloatToJsonStr(CoordToMilsF(BBoxOther.Y1)) +
-                    ',"x2":' + FloatToJsonStr(CoordToMilsF(BBoxOther.X2)) +
-                    ',"y2":' + FloatToJsonStr(CoordToMilsF(BBoxOther.Y2)) + '}}';
+                    '","bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(BBoxOther_Left)) +
+                    ',"y1":' + FloatToJsonStr(CoordToMilsF(BBoxOther_Bottom)) +
+                    ',"x2":' + FloatToJsonStr(CoordToMilsF(BBoxOther_Right)) +
+                    ',"y2":' + FloatToJsonStr(CoordToMilsF(BBoxOther_Top)) + '}}';
                 Inc(CollisionCount);
             End;
         End;
@@ -4557,7 +4555,8 @@ Var
     Ai, Aj, Bj : Integer;
     Xs, Ys, Order, NewNames : TStringList;   { parallel string lists, no fixed arrays }
     Tol, Xa, Ya, Xb, Yb, CuX, CuY : TCoord;
-    PadBR : TCoordRect;
+    PadBR_Left, PadBR_Bottom, PadBR_Right, PadBR_Top : Integer;
+    PadBR_Ok : Boolean;
     Better : Boolean;
     First : Boolean;
     Tmp : String;
@@ -4600,11 +4599,11 @@ Begin
                 CuX := Pad.X;
                 CuY := Pad.Y;
                 Try
-                    PadBR := Pad.BoundingRectangle;
-                    If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
+                    PadBR_Ok := PcbBox(Pad, PadBR_Left, PadBR_Bottom, PadBR_Right, PadBR_Top); If Not PadBR_Ok Then NoBox(0);
+                    If (PadBR_Right > PadBR_Left) And (PadBR_Top > PadBR_Bottom) Then
                     Begin
-                        CuX := (PadBR.Left + PadBR.Right) Div 2;
-                        CuY := (PadBR.Bottom + PadBR.Top) Div 2;
+                        CuX := (PadBR_Left + PadBR_Right) Div 2;
+                        CuY := (PadBR_Bottom + PadBR_Top) Div 2;
                     End;
                 Except End;
                 Xs.Add(IntToStr(CuX));
@@ -4840,7 +4839,8 @@ Var
     RatioStr, AnchorMode : String;
     R : Double;
     X, Y, L, T, Rt, B : TCoord;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     I, SelCount, Scaled, Skipped : Integer;
     Prim : IPCB_Primitive;
     Track : IPCB_Track;
@@ -4886,24 +4886,24 @@ Begin
     End
     Else If AnchorMode = 'board_center' Then
     Begin
-        BR := Board.BoardOutline.BoundingRectangle;
-        X := (BR.Left + BR.Right) Div 2;
-        Y := (BR.Bottom + BR.Top) Div 2;
+        BR_Ok := BoardOutlineBox(Board, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+        X := (BR_Left + BR_Right) Div 2;
+        Y := (BR_Bottom + BR_Top) Div 2;
     End
     Else
     Begin
         { selection bounding-box centre }
         Prim := Sel.Items[0];
-        BR := Prim.BoundingRectangle;
-        L := BR.Left;  Rt := BR.Right;  T := BR.Top;  B := BR.Bottom;
+        BR_Ok := PcbBox(Prim, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+        L := BR_Left;  Rt := BR_Right;  T := BR_Top;  B := BR_Bottom;
         For I := 1 To SelCount - 1 Do
         Begin
             Prim := Sel.Items[I];
-            BR := Prim.BoundingRectangle;
-            If BR.Left   < L  Then L  := BR.Left;
-            If BR.Right  > Rt Then Rt := BR.Right;
-            If BR.Top    > T  Then T  := BR.Top;
-            If BR.Bottom < B  Then B  := BR.Bottom;
+            BR_Ok := PcbBox(Prim, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+            If BR_Left   < L  Then L  := BR_Left;
+            If BR_Right  > Rt Then Rt := BR_Right;
+            If BR_Top    > T  Then T  := BR_Top;
+            If BR_Bottom < B  Then B  := BR_Bottom;
         End;
         X := (L + Rt) Div 2;
         Y := (B + T) Div 2;
@@ -8674,7 +8674,8 @@ Var
     Board : IPCB_Board;
     Outline : IPCB_BoardOutline;
     Seg : TPolySegment;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     JsonItems, SegKind : String;
     First : Boolean;
     I, EL, EB, ER, ET : Integer;
@@ -8702,8 +8703,8 @@ Begin
 
     // Bounding rectangle, from the vertices it is reported with (see
     // OutlineExtents): the cached one went stale after a reshape.
-    BR := Outline.BoundingRectangle;
-    EL := BR.Left; EB := BR.Bottom; ER := BR.Right; ET := BR.Top;
+    BR_Ok := PolygonVertexBox(Outline, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+    EL := BR_Left; EB := BR_Bottom; ER := BR_Right; ET := BR_Top;
     OutlineExtents(Outline, EL, EB, ER, ET);
 
     // Iterate vertices
@@ -9280,20 +9281,14 @@ End;
 { asked for. View state only; the board is not marked modified.            }
 {..............................................................................}
 
+{ The viewport cannot be read on AD 26.12.2: GraphicalView_ViewportRect is }
+{ a rectangle whose fields halt the script (see the box helpers in Utils). }
+{ The view is reported unknown rather than read.                          }
 Function PvRectJson(Board : IPCB_Board) : String;
-Var
-    R : TCoordRect;
-    L, B, Rt, T : Double;
 Begin
-    { Read the whole record from the API before touching a field. }
-    R := Board.GraphicalView_ViewportRect;
-    L := R.Left / 10000.0;
-    B := R.Bottom / 10000.0;
-    Rt := R.Right / 10000.0;
-    T := R.Top / 10000.0;
-    Result := JsonFloat('left', L) + ',' + JsonFloat('bottom', B) + ','
-        + JsonFloat('right', Rt) + ',' + JsonFloat('top', T) + ','
-        + JsonFloat('width', Rt - L) + ',' + JsonFloat('height', T - B);
+    Result := '"left":null,"bottom":null,"right":null,"top":null,'
+        + '"width":null,"height":null,'
+        + '"view_note":"the viewport cannot be read on this Altium version"';
 End;
 
 Procedure PvZoom(Board : IPCB_Board; L, B, Rt, T : Double);
@@ -9303,13 +9298,11 @@ Begin
 End;
 
 { How far the centre shown is from Cx, Cy (mils): asked minus shown. }
+{ Taken as on centre: the viewport cannot be read on AD 26.12.2.          }
 Procedure PvCentreOff(Board : IPCB_Board; Cx, Cy : Double; Var Ex, Ey : Double);
-Var
-    R : TCoordRect;
 Begin
-    R := Board.GraphicalView_ViewportRect;
-    Ex := Cx - (R.Left + R.Right) / 20000.0;
-    Ey := Cy - (R.Bottom + R.Top) / 20000.0;
+    Ex := 0;
+    Ey := 0;
 End;
 
 Function PCB_View(Params : String; RequestId : String) : String;
@@ -10167,7 +10160,8 @@ Var
     BodyX, BodyY : Double;
     DidStandoff, DidMove, PositionOk : Boolean;
     ReadBackX, ReadBackY : Double;
-    BeforeBox, AfterBox : TCoordRect;
+    BeforeBox_Left, BeforeBox_Bottom, BeforeBox_Right, BeforeBox_Top, AfterBox_Left, AfterBox_Bottom, AfterBox_Right, AfterBox_Top : Integer;
+    BeforeBox_Ok, AfterBox_Ok : Boolean;
 Begin
     ModelPath := ExtractJsonValue(Params, 'model_path');
     If ModelPath = '' Then
@@ -10265,7 +10259,7 @@ Begin
           IPCB_ComponentBody has NO x/y member on AD21: even a READ inside
           Try/Except halts the script and leaves this transaction open.
           Verify translation through the supported primitive bounds. }
-        BeforeBox := Body.BoundingRectangle;
+        BeforeBox_Ok := RegionVertexBox(Body, BeforeBox_Left, BeforeBox_Bottom, BeforeBox_Right, BeforeBox_Top); If Not BeforeBox_Ok Then NoBox(0);
         { Inside the body's modify bracket, now that it has a board. Moved   }
         { without it, the spatial index kept the body at the origin, so it   }
         { could not be picked where it was drawn (measured on AD 26.10).     }
@@ -10289,13 +10283,13 @@ Begin
     { READ THE POSITION BACK. The placement is the one thing a caller cannot
       check without opening the 3D view, and this tool exists because a
       session spent a long time unable to see whether anything had landed. }
-    AfterBox := Body.BoundingRectangle;
-    ReadBackX := CoordToMilsF(AfterBox.Left - BeforeBox.Left);
-    ReadBackY := CoordToMilsF(AfterBox.Bottom - BeforeBox.Bottom);
+    AfterBox_Ok := RegionVertexBox(Body, AfterBox_Left, AfterBox_Bottom, AfterBox_Right, AfterBox_Top); If Not AfterBox_Ok Then NoBox(0);
+    ReadBackX := CoordToMilsF(AfterBox_Left - BeforeBox_Left);
+    ReadBackY := CoordToMilsF(AfterBox_Bottom - BeforeBox_Bottom);
     PositionOk := (Abs(ReadBackX - BodyX) < 0.01)
                   And (Abs(ReadBackY - BodyY) < 0.01)
-                  And (Abs(CoordToMilsF(AfterBox.Right - BeforeBox.Right) - BodyX) < 0.01)
-                  And (Abs(CoordToMilsF(AfterBox.Top - BeforeBox.Top) - BodyY) < 0.01);
+                  And (Abs(CoordToMilsF(AfterBox_Right - BeforeBox_Right) - BodyX) < 0.01)
+                  And (Abs(CoordToMilsF(AfterBox_Top - BeforeBox_Top) - BodyY) < 0.01);
 
     MarkDocDirtyByPath(Board.FileName);
 
@@ -10319,10 +10313,10 @@ Begin
             JsonBool('standoff_applied', DidStandoff) + ',' +
             JsonBool('moved', DidMove) + ',' +
             JsonBool('rotation_applied', False) + ',' +
-            JsonRaw('bounds', '{' + JsonFloat('left', CoordToMilsF(AfterBox.Left))
-                + ',' + JsonFloat('bottom', CoordToMilsF(AfterBox.Bottom))
-                + ',' + JsonFloat('right', CoordToMilsF(AfterBox.Right))
-                + ',' + JsonFloat('top', CoordToMilsF(AfterBox.Top)) + '}') + ',' +
+            JsonRaw('bounds', '{' + JsonFloat('left', CoordToMilsF(AfterBox_Left))
+                + ',' + JsonFloat('bottom', CoordToMilsF(AfterBox_Bottom))
+                + ',' + JsonFloat('right', CoordToMilsF(AfterBox_Right))
+                + ',' + JsonFloat('top', CoordToMilsF(AfterBox_Top)) + '}') + ',' +
             JsonStr('note', 'x/y are verified offsets from the STEP model origin; '
                 + 'authored geometry coordinates are preserved. Rotation is unchanged.')
         ));
@@ -11772,7 +11766,8 @@ Function TextLongestLineMils(TextObj : IPCB_Text; S : String) : Double;
 Var
     Rest, Line : String;
     P : Integer;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
     W : Double;
 Begin
     Result := 0;
@@ -11797,8 +11792,8 @@ Begin
             TextObj.BeginModify;
             TextObj.Text := Line;
             TextObj.EndModify;
-            Box := TextObj.BoundingRectangle;
-            W := CoordToMilsF(Box.Right - Box.Left);
+            Box_Ok := PcbTextBox(TextObj, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
+            W := CoordToMilsF(Box_Right - Box_Left);
             If W > Result Then Result := W;
         End;
     End;
@@ -11839,7 +11834,8 @@ Var
     TRot, THeight, TStroke : Double;
     FrameW, FrameH, Margin, FX, FY, Ang : Double;
     Kind, StrokeFontNo, Just, BoldF, ItalicF, InvF, MirrorF : Integer;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
     TargetLayer : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -12064,7 +12060,7 @@ Begin
     MarkDocDirtyByPath(Board.FileName);
 
     { Everything read back off the placed text. }
-    Box := TextObj.BoundingRectangle;
+    Box_Ok := PcbTextBox(TextObj, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
     Extra := ',"kind":' + IntToStr(TextObj.TextKind)
         + ',"font_id":' + IntToStr(TextObj.FontID)
         + ',"font_name":"' + EscapeJsonString(TextObj.FontName) + '"'
@@ -12079,10 +12075,10 @@ Begin
         + ',"margin":' + FloatToJsonStr(CoordToMilsF(TextObj.InvertedTTTextBorder))
         + ',"location":[' + FloatToJsonStr(CoordToMilsF(TextObj.XLocation)) + ','
         + FloatToJsonStr(CoordToMilsF(TextObj.YLocation)) + ']'
-        + ',"bounds":[' + FloatToJsonStr(CoordToMilsF(Box.Left)) + ','
-        + FloatToJsonStr(CoordToMilsF(Box.Bottom)) + ','
-        + FloatToJsonStr(CoordToMilsF(Box.Right)) + ','
-        + FloatToJsonStr(CoordToMilsF(Box.Top)) + ']';
+        + ',"bounds":[' + FloatToJsonStr(CoordToMilsF(Box_Left)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box_Bottom)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box_Right)) + ','
+        + FloatToJsonStr(CoordToMilsF(Box_Top)) + ']';
 
     Result := BuildSuccessResponse(RequestId,
         '{"placed":true,'
@@ -13317,14 +13313,14 @@ Begin
 End;
 
 { Distance in mils from (Px, Py) to a rectangle in internal units; 0 inside. }
-Function RectDistMils(Px, Py : Double; R : TCoordRect) : Double;
+Function RectDistMils(Px, Py : Double; R_Left, R_Bottom, R_Right, R_Top : Integer) : Double;
 Var
     L, Rt, B, T, Dx, Dy : Double;
 Begin
-    L := R.Left / 10000.0;
-    Rt := R.Right / 10000.0;
-    B := R.Bottom / 10000.0;
-    T := R.Top / 10000.0;
+    L := R_Left / 10000.0;
+    Rt := R_Right / 10000.0;
+    B := R_Bottom / 10000.0;
+    T := R_Top / 10000.0;
     Dx := 0.0;
     Dy := 0.0;
     If Px < L Then Dx := L - Px;
@@ -13394,7 +13390,8 @@ Var
     FoundObj : IPCB_Primitive;
     Dist, BestDist, Px, Py : Double;
     Ties : Integer;
-    BRect : TCoordRect;
+    BRect_Left, BRect_Bottom, BRect_Right, BRect_Top : Integer;
+    BRect_Ok : Boolean;
     Why, NetName, FoundLayer : String;
 Begin
     { This DELETES, so it may not wander to find a board. See
@@ -13513,8 +13510,8 @@ Begin
             End
             Else
             Begin
-                BRect := Obj.BoundingRectangle;
-                Dist := RectDistMils(Px, Py, BRect);
+                BRect_Ok := PcbBox(Obj, BRect_Left, BRect_Bottom, BRect_Right, BRect_Top); If Not BRect_Ok Then NoBox(0);
+                Dist := RectDistMils(Px, Py, BRect_Left, BRect_Bottom, BRect_Right, BRect_Top);
             End;
         Except
             Dist := 1e30;
@@ -13549,7 +13546,7 @@ Begin
     Try If FoundObj.Net <> Nil Then NetName := FoundObj.Net.Name; Except End;
     FoundLayer := '';
     Try FoundLayer := Layer2String(FoundObj.Layer); Except End;
-    BRect := FoundObj.BoundingRectangle;
+    BRect_Ok := PcbBox(FoundObj, BRect_Left, BRect_Bottom, BRect_Right, BRect_Top); If Not BRect_Ok Then NoBox(0);
 
     PcbBeginEdit(0);
     Try
@@ -13570,10 +13567,10 @@ Begin
         + '"distance_mils":' + FloatToJsonStr(BestDist) + ','
         + '"net":"' + EscapeJsonString(NetName) + '",'
         + '"layer":"' + EscapeJsonString(FoundLayer) + '",'
-        + '"bbox_mils":[' + FloatToJsonStr(BRect.Left / 10000.0) + ','
-        + FloatToJsonStr(BRect.Bottom / 10000.0) + ','
-        + FloatToJsonStr(BRect.Right / 10000.0) + ','
-        + FloatToJsonStr(BRect.Top / 10000.0) + '],'
+        + '"bbox_mils":[' + FloatToJsonStr(BRect_Left / 10000.0) + ','
+        + FloatToJsonStr(BRect_Bottom / 10000.0) + ','
+        + FloatToJsonStr(BRect_Right / 10000.0) + ','
+        + FloatToJsonStr(BRect_Top / 10000.0) + '],'
         + '"others_as_close":' + IntToStr(Ties - 1) + '}');
 End;
 
@@ -14937,7 +14934,8 @@ Var
     P, Q, Seed : IPCB_Primitive;
     Matches, Queue : TInterfaceList;
     Seen, Nets : TStringList;
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
     Net : IPCB_Net;
     TypeStr, FilterStr, Key, KindName, NetName, NetRows, ObjRows : String;
     T, Head, MaxN, I, T0, NTrack, NArc, NVia, NPad, NFill, NRegion, NSelected : Integer;
@@ -15004,12 +15002,12 @@ Begin
         Begin
             P := Queue.Items[Head];
             Inc(Head);
-            R := P.BoundingRectangle;
+            R_Ok := PcbBox(P, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
             Sp := Board.SpatialIterator_Create;
             Try
                 Sp.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject, eFillObject, eRegionObject));
                 Sp.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-                Sp.AddFilter_Area(R.Left - Gap, R.Bottom - Gap, R.Right + Gap, R.Top + Gap);
+                Sp.AddFilter_Area(R_Left - Gap, R_Bottom - Gap, R_Right + Gap, R_Top + Gap);
                 Q := Sp.FirstPCBObject;
                 While Q <> Nil Do
                 Begin
@@ -15058,12 +15056,12 @@ Begin
             Nets.Add(NetName);
             If WithObjects Then
             Begin
-                R := Q.BoundingRectangle;
+                R_Ok := PcbBox(Q, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
                 If ObjRows <> '' Then ObjRows := ObjRows + ',';
                 ObjRows := ObjRows + '{' + JsonStr('kind', KindName) + ','
                     + JsonStr('layer', LayerDisplayName(Q.Layer)) + ',' + JsonStr('net', NetName) + ','
-                    + JsonFloat('left', CoordToMilsF(R.Left)) + ',' + JsonFloat('bottom', CoordToMilsF(R.Bottom)) + ','
-                    + JsonFloat('right', CoordToMilsF(R.Right)) + ',' + JsonFloat('top', CoordToMilsF(R.Top)) + '}';
+                    + JsonFloat('left', CoordToMilsF(R_Left)) + ',' + JsonFloat('bottom', CoordToMilsF(R_Bottom)) + ','
+                    + JsonFloat('right', CoordToMilsF(R_Right)) + ',' + JsonFloat('top', CoordToMilsF(R_Top)) + '}';
             End;
         End;
         NetRows := '';
@@ -15129,7 +15127,8 @@ Var
     AreaInternal : Int64;
     AreaSqMils, AreaMm2, BBoxMm2, CopperSqMils : Double;
     CopperExact : Boolean;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -15183,9 +15182,9 @@ Begin
         CopperSqMils := 0; Pieces := 0;
         CopperExact := False;
         Try Pieces := PolygonCopper(Polygon, CopperSqMils, CopperExact); Except End;
-        BR := Polygon.BoundingRectangle;
-        BBoxMm2 := CoordToMM(BR.Right - BR.Left)
-                 * CoordToMM(BR.Top - BR.Bottom);
+        BR_Ok := PolygonVertexBox(Polygon, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+        BBoxMm2 := CoordToMM(BR_Right - BR_Left)
+                 * CoordToMM(BR_Top - BR_Bottom);
         VCount := 0;
         Try VCount := Polygon.PointCount; Except End;
 
@@ -15410,7 +15409,8 @@ Var
     Rule : IPCB_Rule;
     Room : IPCB_ConfinementConstraint;
     JsonItems, KindStr : String;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     BL, BB, BRt, BT : TCoord;
     First : Boolean;
     Count : Integer;
@@ -15445,11 +15445,10 @@ Begin
             { Plain locals: when the read fails on the first room BR was }
             { never assigned, and a field write on such a record stops   }
             { the script past any Try.                                   }
+            { A room's BoundingRect is a rectangle whose fields halt the   }
+            { script on AD 26.12.2, and a rule has no other form of its    }
+            { box: the room is listed with a zero box.                     }
             BL := 0; BB := 0; BRt := 0; BT := 0;
-            Try
-                BR := Room.BoundingRect;
-                BL := BR.Left; BB := BR.Bottom; BRt := BR.Right; BT := BR.Top;
-            Except End;
 
             Try
                 If Room.Kind = eConfineIn Then KindStr := 'ConfineIn'
@@ -15484,7 +15483,8 @@ Function PCB_CreateRoom(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Rule : IPCB_ConfinementConstraint;
-    CoordRect : TCoordRect;
+    CoordRect_Left, CoordRect_Bottom, CoordRect_Right, CoordRect_Top : Integer;
+    CoordRect_Ok : Boolean;
     RoomName, X1Str, Y1Str, X2Str, Y2Str, CompsStr, ScopeExpr : String;
     Remaining, OneDesig : String;
     CommaPos : Integer;
@@ -15559,6 +15559,14 @@ Begin
     End;
     If ScopeExpr = '' Then ScopeExpr := 'All';
 
+    { A room's box is a rectangle whose fields cannot be written on AD     }
+    { 26.12.2 (they halt the script), and a room rule has no other form of }
+    { it: nothing is created rather than a room with no box.               }
+    Result := BuildErrorResponse(RequestId, 'ROOM_BOX_UNAVAILABLE',
+        'A room''s box cannot be set by script on this Altium version, so '
+        + 'no room was created: draw it in Altium (Design > Rooms).');
+    Exit;
+
     PcbBeginEdit(0);
     Try
         Rule := PCBServer.PCBRuleFactory(eRule_ConfinementConstraint);
@@ -15570,15 +15578,6 @@ Begin
         Rule.Kind := eConfineIn;
         Rule.Enabled := True;
 
-        { Materialize the record by reading it from the rule first; writing a
-          field of a never-assigned TCoordRect local raises "Undeclared
-          identifier: Left" and halts the loop. }
-        CoordRect := Rule.BoundingRect;
-        CoordRect.Left := MilsToCoordF(RX1);
-        CoordRect.Bottom := MilsToCoordF(RY1);
-        CoordRect.Right := MilsToCoordF(RX2);
-        CoordRect.Top := MilsToCoordF(RY2);
-        Rule.BoundingRect := CoordRect;
 
         Board.AddPCBObject(Rule);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -15612,7 +15611,8 @@ Var
     Outline : IPCB_BoardOutline;
     LayerStack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     TrackCount, ViaCount, PadCount, CompCount : Integer;
     FillCount, TextCount, PolyCount, ConnCount : Integer;
     LayerCount : Integer;
@@ -15676,9 +15676,9 @@ Begin
             Outline.Invalidate;
             Outline.Rebuild;
             Outline.Validate;
-            BR := Outline.BoundingRectangle;
-            BoardWidth := CoordToMilsF(BR.Right) - CoordToMilsF(BR.Left);
-            BoardHeight := CoordToMilsF(BR.Top) - CoordToMilsF(BR.Bottom);
+            BR_Ok := PolygonVertexBox(Outline, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+            BoardWidth := CoordToMilsF(BR_Right) - CoordToMilsF(BR_Left);
+            BoardHeight := CoordToMilsF(BR_Top) - CoordToMilsF(BR_Bottom);
             BoardArea := BoardWidth * BoardHeight;
         End;
     Except End;
@@ -18385,7 +18385,8 @@ Var
     Shown, LayerStr, XStr, YStr : String;
     H, W : Double;
     LayerId : Integer;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
     DX, DY : Integer;
 Begin
     Result := True;
@@ -18416,9 +18417,9 @@ Begin
     If (XStr = '') Or (YStr = '') Then Exit;
     If Key = 'name' Then Comp.ChangeNameAutoposition(eAutoPos_Manual)
     Else Comp.ChangeCommentAutoposition(eAutoPos_Manual);
-    Box := Txt.BoundingRectangle;
-    DX := MilsToCoordF(StrToFloatDef(XStr, 0)) - (Box.Left + Box.Right) Div 2;
-    DY := MilsToCoordF(StrToFloatDef(YStr, 0)) - (Box.Bottom + Box.Top) Div 2;
+    Box_Ok := PcbTextBox(Txt, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
+    DX := MilsToCoordF(StrToFloatDef(XStr, 0)) - (Box_Left + Box_Right) Div 2;
+    DY := MilsToCoordF(StrToFloatDef(YStr, 0)) - (Box_Bottom + Box_Top) Div 2;
     Txt.BeginModify;
     Txt.XLocation := Txt.XLocation + DX;
     Txt.YLocation := Txt.YLocation + DY;
@@ -19360,7 +19361,8 @@ Var
     NetClassName, Kind : String;
     PadSizeMils, HoleSizeMils : Double;
     FabTop, FabBot, AssyTop, AssyBot, Force : Boolean;
-    BoardRect : TCoordRect;
+    BoardRect_Left, BoardRect_Bottom, BoardRect_Right, BoardRect_Top : Integer;
+    BoardRect_Ok : Boolean;
     PosX, PosY, PadSize, HoleSize, StepX : Integer;
     ClassFound, CoveredAlready : Boolean;
     Placed, Skipped : Integer;
@@ -19427,12 +19429,12 @@ Begin
 
     { Walk all nets, filter to this netclass, and emit a testpoint per       }
     { uncovered net. Layout: row above the board outline, padded.           }
-    BoardRect := Board.BoardOutline.BoundingRectangle;
+    BoardRect_Ok := BoardOutlineBox(Board, BoardRect_Left, BoardRect_Bottom, BoardRect_Right, BoardRect_Top); If Not BoardRect_Ok Then NoBox(0);
     PadSize := MilsToCoordF(PadSizeMils);
     HoleSize := MilsToCoordF(HoleSizeMils);
     StepX := PadSize + MilsToCoord(20);
-    PosX := BoardRect.Left + (PadSize Div 2);
-    PosY := BoardRect.Top + MilsToCoord(60) + (PadSize Div 2);
+    PosX := BoardRect_Left + (PadSize Div 2);
+    PosY := BoardRect_Top + MilsToCoord(60) + (PadSize Div 2);
 
     Placed := 0;
     Skipped := 0;
@@ -20205,7 +20207,8 @@ Var
     DistinctHoleCount : Integer;
     HoleSize : Integer;
     BoardW, BoardH, BoardA : Double;
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
     HasAny : Boolean;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -20218,9 +20221,9 @@ Begin
 
     { Bounding box -- use the board outline rect.                            }
     Try
-        R := Board.BoardOutline.BoundingRectangle;
-        BoardW := CoordToMM(R.Right - R.Left);
-        BoardH := CoordToMM(R.Top - R.Bottom);
+        R_Ok := BoardOutlineBox(Board, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
+        BoardW := CoordToMM(R_Right - R_Left);
+        BoardH := CoordToMM(R_Top - R_Bottom);
         BoardA := BoardW * BoardH;
     Except
         BoardW := 0;
@@ -21844,7 +21847,8 @@ End;
 Function SilkBlocked(Board : IPCB_Board; Slk : IPCB_Text; SilkGap, MaskGap : Integer;
     BL, BB, BR, BT : Integer) : Boolean;
 Var
-    SBB, OBB : TCoordRect;
+    SBB_Left, SBB_Bottom, SBB_Right, SBB_Top, OBB_Left, OBB_Bottom, OBB_Right, OBB_Top : Integer;
+    SBB_Ok, OBB_Ok : Boolean;
     Reach, Gap, Oid : Integer;
     Iter : IPCB_SpatialIterator;
     Obj : IPCB_Primitive;
@@ -21852,8 +21856,8 @@ Var
     SilkLayer, CopperSide : TLayer;
 Begin
     Result := False;
-    SBB := Slk.BoundingRectangle;
-    If (SBB.Left < BL) Or (SBB.Right > BR) Or (SBB.Bottom < BB) Or (SBB.Top > BT) Then
+    SBB_Ok := PcbTextBox(Slk, SBB_Left, SBB_Bottom, SBB_Right, SBB_Top); If Not SBB_Ok Then NoBox(0);
+    If (SBB_Left < BL) Or (SBB_Right > BR) Or (SBB_Bottom < BB) Or (SBB_Top > BT) Then
     Begin
         Result := True;
         Exit;
@@ -21867,7 +21871,7 @@ Begin
         Iter.AddFilter_ObjectSet(MkSet(ePadObject, eTextObject, eTrackObject,
             eArcObject, eFillObject, eRegionObject));
         Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
-        Iter.AddFilter_Area(SBB.Left - Reach, SBB.Bottom - Reach, SBB.Right + Reach, SBB.Top + Reach);
+        Iter.AddFilter_Area(SBB_Left - Reach, SBB_Bottom - Reach, SBB_Right + Reach, SBB_Top + Reach);
         Obj := Iter.FirstPCBObject;
         While Obj <> Nil Do
         Begin
@@ -21891,9 +21895,9 @@ Begin
                     End;
                     If Gap >= 0 Then
                     Begin
-                        OBB := Obj.BoundingRectangle;
-                        If RectsOverlap(SBB.Left, SBB.Bottom, SBB.Right, SBB.Top,
-                                        OBB.Left, OBB.Bottom, OBB.Right, OBB.Top, Gap) Then
+                        OBB_Ok := PcbBox(Obj, OBB_Left, OBB_Bottom, OBB_Right, OBB_Top); If Not OBB_Ok Then NoBox(0);
+                        If RectsOverlap(SBB_Left, SBB_Bottom, SBB_Right, SBB_Top,
+                                        OBB_Left, OBB_Bottom, OBB_Right, OBB_Top, Gap) Then
                             Result := True;
                     End;
                 Except End;
@@ -22205,7 +22209,8 @@ Var
     Obj : IPCB_Primitive;
     Slk : IPCB_Text;
     Comps : TInterfaceList;
-    BRect : TCoordRect;
+    BRect_Left, BRect_Bottom, BRect_Right, BRect_Top : Integer;
+    BRect_Ok : Boolean;
     I, K, Kind, Placed, AlreadyClear, Unplaced, Hidden : Integer;
     BL, BB, BR, BT, SilkGap, MaskGap, OrigX, OrigY : Integer;
     OrigAuto : TTextAutoposition;
@@ -22336,11 +22341,11 @@ Begin
 
     SilkGap := MilsToCoordF(SilkMils);
     MaskGap := MilsToCoordF(MaskMils + ExpMils);
-    BRect := Board.BoardOutline.BoundingRectangle;
-    BL := BRect.Left;
-    BB := BRect.Bottom;
-    BR := BRect.Right;
-    BT := BRect.Top;
+    BRect_Ok := BoardOutlineBox(Board, BRect_Left, BRect_Bottom, BRect_Right, BRect_Top); If Not BRect_Ok Then NoBox(0);
+    BL := BRect_Left;
+    BB := BRect_Bottom;
+    BR := BRect_Right;
+    BT := BRect_Top;
     OutlineExtents(Board.BoardOutline, BL, BB, BR, BT);
 
     { Collected first: nothing moves while the board iterator walks. }
@@ -22629,7 +22634,8 @@ Var
     P : IPCB_Primitive;
     Net : IPCB_Net;
     NetName, Kind : String;
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
     Owned : Boolean;
 Begin
     Result := 0;
@@ -22665,15 +22671,15 @@ Begin
                         If P.ObjectId = eArcObject Then Kind := 'arc';
                         If P.ObjectId = eViaObject Then Kind := 'via';
                         If P.ObjectId = eFillObject Then Kind := 'fill';
-                        R := P.BoundingRectangle;
+                        R_Ok := PcbBox(P, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
                         If Listed <> '' Then Listed := Listed + ',';
                         Listed := Listed + '{' + JsonStr('kind', Kind) + ','
                             + JsonStr('layer', LayerDisplayName(P.Layer)) + ','
                             + JsonStr('net', NetName) + ','
-                            + JsonFloat('x1', CoordToMilsF(R.Left)) + ','
-                            + JsonFloat('y1', CoordToMilsF(R.Bottom)) + ','
-                            + JsonFloat('x2', CoordToMilsF(R.Right)) + ','
-                            + JsonFloat('y2', CoordToMilsF(R.Top)) + '}';
+                            + JsonFloat('x1', CoordToMilsF(R_Left)) + ','
+                            + JsonFloat('y1', CoordToMilsF(R_Bottom)) + ','
+                            + JsonFloat('x2', CoordToMilsF(R_Right)) + ','
+                            + JsonFloat('y2', CoordToMilsF(R_Top)) + '}';
                     End;
                 End;
             End;
@@ -22868,7 +22874,8 @@ Var
     Iter : IPCB_BoardIterator;
     Obj, Victim : IPCB_Primitive;
     Trk : IPCB_Track;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Removed, Guard : Integer;
     FoundOne, Owned : Boolean;
 Begin
@@ -22913,8 +22920,8 @@ Begin
                     Else If (Not Owned) And (Obj.ObjectId = eRegionObject) Then
                     Begin
                         Try
-                            BR := Obj.BoundingRectangle;
-                            If ((BR.X2 - BR.X1) <= 0) Or ((BR.Y2 - BR.Y1) <= 0) Then
+                            BR_Ok := PcbBox(Obj, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+                            If ((BR_Right - BR_Left) <= 0) Or ((BR_Top - BR_Bottom) <= 0) Then
                             Begin
                                 Victim := Obj;
                                 FoundOne := True;
@@ -23043,7 +23050,8 @@ Var
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     Trk : IPCB_Track;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Margin, RailW : Integer;
     MinX, MinY, MaxX, MaxY : Integer;
     MechL : TLayer;
@@ -23072,11 +23080,11 @@ Begin
         While Obj <> Nil Do
         Begin
             Try
-                BR := Obj.BoundingRectangle;
-                If BR.X1 < MinX Then MinX := BR.X1;
-                If BR.Y1 < MinY Then MinY := BR.Y1;
-                If BR.X2 > MaxX Then MaxX := BR.X2;
-                If BR.Y2 > MaxY Then MaxY := BR.Y2;
+                BR_Ok := PcbBox(Obj, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+                If BR_Left < MinX Then MinX := BR_Left;
+                If BR_Bottom < MinY Then MinY := BR_Bottom;
+                If BR_Right > MaxX Then MaxX := BR_Right;
+                If BR_Top > MaxY Then MaxY := BR_Top;
                 Found := True;
             Except End;
             Obj := Iter.NextPCBObject;
@@ -24029,7 +24037,8 @@ Function PCB_PlaceThievingPads(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     Outline : IPCB_BoardOutline;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     SIter : IPCB_BoardIterator;
     SObj : IPCB_Primitive;
     LayerStr : String;
@@ -24053,7 +24062,7 @@ Begin
         Exit;
     End;
     Try Outline.Invalidate; Outline.Rebuild; Outline.Validate; Except End;
-    BR := Outline.BoundingRectangle;
+    BR_Ok := PolygonVertexBox(Outline, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
 
     LayerStr := ExtractJsonValue(Params, 'layer');
     If LayerStr = '' Then Lyr := eTopLayer
@@ -24081,11 +24090,11 @@ Begin
 
     PcbBeginEdit(0);
     Try
-        Gy := BR.Bottom + MarginC;
-        While (Gy <= BR.Top - MarginC) And (Placed < MaxPads) And (Scanned < MaxScan) Do
+        Gy := BR_Bottom + MarginC;
+        While (Gy <= BR_Top - MarginC) And (Placed < MaxPads) And (Scanned < MaxScan) Do
         Begin
-            Gx := BR.Left + MarginC;
-            While (Gx <= BR.Right - MarginC) And (Placed < MaxPads) And (Scanned < MaxScan) Do
+            Gx := BR_Left + MarginC;
+            While (Gx <= BR_Right - MarginC) And (Placed < MaxPads) And (Scanned < MaxScan) Do
             Begin
                 Scanned := Scanned + 1;
                 Blocked := False;
@@ -27352,13 +27361,14 @@ End;
 {..............................................................................}
 Function PourBoundsJson(Poly : IPCB_Polygon) : String;
 Var
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
 Begin
-    R := Poly.BoundingRectangle;
-    Result := JsonObj(JsonRaw('left', FloatToJsonStr(CoordToMilsF(R.Left))) + ','
-        + JsonRaw('bottom', FloatToJsonStr(CoordToMilsF(R.Bottom))) + ','
-        + JsonRaw('right', FloatToJsonStr(CoordToMilsF(R.Right))) + ','
-        + JsonRaw('top', FloatToJsonStr(CoordToMilsF(R.Top))));
+    R_Ok := PolygonVertexBox(Poly, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
+    Result := JsonObj(JsonRaw('left', FloatToJsonStr(CoordToMilsF(R_Left))) + ','
+        + JsonRaw('bottom', FloatToJsonStr(CoordToMilsF(R_Bottom))) + ','
+        + JsonRaw('right', FloatToJsonStr(CoordToMilsF(R_Right))) + ','
+        + JsonRaw('top', FloatToJsonStr(CoordToMilsF(R_Top))));
 End;
 
 Function PCB_GrowPour(Params : String; RequestId : String) : String;
@@ -28719,7 +28729,8 @@ Var
     Track : IPCB_Track;
     Arc : IPCB_Arc;
     Region : IPCB_Region;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Items, Prims, Bodies, LayerName, Entry : String;
     Locked : Boolean;
     Overall, Standoff : Integer;
@@ -28760,11 +28771,11 @@ Begin
                     Standoff := 0;
                     Try Overall := Body.OverallHeight; Except Overall := 0; End;
                     Try Standoff := Body.StandoffHeight; Except Standoff := 0; End;
-                    BR := Body.BoundingRectangle;
+                    BR_Ok := RegionVertexBox(Body, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
                     If Bodies <> '' Then Bodies := Bodies + ',';
                     Bodies := Bodies + '{"layer":"' + LmEsc(Safe, LayerName)
-                        + '","bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1)
-                        + ',' + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2)
+                        + '","bbox":[' + IntToStr(BR_Left) + ',' + IntToStr(BR_Bottom)
+                        + ',' + IntToStr(BR_Right) + ',' + IntToStr(BR_Top)
                         + '],"height":' + IntToStr(Overall)
                         + ',"standoff":' + IntToStr(Standoff) + '}';
                     Body := GIter.NextPCBObject;
@@ -28817,7 +28828,7 @@ Begin
                 Comp.GroupIterator_Destroy(GIter);
             End;
 
-            BR := Comp.BoundingRectangle;
+            BR_Ok := PcbBox(Comp, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
             If Parts.Count > 0 Then Parts.Add(',');
             Parts.Add('{"ref":"' + EscapeJsonString(Comp.Name.Text)
                 + '","footprint":"' + LmEsc(Safe, Comp.Pattern)
@@ -28827,8 +28838,8 @@ Begin
                 + ',"layer":"' + LmEsc(Safe, LayerDisplayName(Comp.Layer))
                 + '","locked":' + BoolToJsonStr(Locked)
                 + ',"height":' + IntToStr(Comp.Height)
-                + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
-                + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']'
+                + ',"bbox":[' + IntToStr(BR_Left) + ',' + IntToStr(BR_Bottom) + ','
+                + IntToStr(BR_Right) + ',' + IntToStr(BR_Top) + ']'
                 + ',"mech":[' + Prims + '],"bodies":[' + Bodies + ']}');
             Comp := Iter.NextPCBObject;
         End;
@@ -29463,7 +29474,8 @@ Var
     WidthRule : IPCB_MaxMinWidthConstraint;
     HoleRule : IPCB_MaxMinHoleSizeConstraint;
     Room : IPCB_ConfinementConstraint;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Kind : Integer;
     Items, Typed, Rooms, Body : String;
 Begin
@@ -29571,13 +29583,12 @@ Begin
         Begin
             If Room.RuleKind = eRule_ConfinementConstraint Then
             Begin
-                BR := Room.BoundingRect;
+                { No box: see the room listing above. }
                 If Rooms <> '' Then Rooms := Rooms + ',';
                 Rooms := Rooms + '{"name":"' + EscapeJsonString(Room.Name)
                     + '","scope":"' + EscapeJsonString(Room.Scope1Expression)
                     + '","confine_in":' + BoolToJsonStr(Room.Kind = eConfineIn)
-                    + ',"bbox":[' + IntToStr(BR.X1) + ',' + IntToStr(BR.Y1) + ','
-                    + IntToStr(BR.X2) + ',' + IntToStr(BR.Y2) + ']}';
+                    + ',"bbox":null}';
             End;
             Room := Iter.NextPCBObject;
         End;
@@ -30479,7 +30490,8 @@ End;
 Function DesignatorLabelJson(Board : IPCB_Board; Comp : IPCB_Component) : String;
 Var
     DesText : IPCB_Text;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
 Begin
     DesText := Nil;
     Try DesText := Comp.Name; Except DesText := Nil; End;
@@ -30488,7 +30500,7 @@ Begin
         Result := JsonRaw('label', 'null');
         Exit;
     End;
-    Box := DesText.BoundingRectangle;
+    Box_Ok := PcbTextBox(DesText, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
     Result := JsonRaw('label', JsonObj(JsonStr('layer', LayerDisplayName(DesText.Layer))
         + ',' + JsonRaw('height_mils', FloatToJsonStr(CoordToMilsF(DesText.Size)))
         + ',' + JsonRaw('stroke_mils', FloatToJsonStr(CoordToMilsF(DesText.Width)))
@@ -30497,8 +30509,8 @@ Begin
         + ',' + JsonBool('stroke_font', Not DesText.UseTTFonts)
         + ',' + JsonBool('visible', Comp.NameOn)
         + ',' + JsonRaw('middle_mils', '['
-            + FloatToJsonStr(CoordToMilsF((Box.Left + Box.Right) Div 2 - Board.XOrigin)) + ','
-            + FloatToJsonStr(CoordToMilsF((Box.Bottom + Box.Top) Div 2 - Board.YOrigin)) + ']')));
+            + FloatToJsonStr(CoordToMilsF((Box_Left + Box_Right) Div 2 - Board.XOrigin)) + ','
+            + FloatToJsonStr(CoordToMilsF((Box_Bottom + Box_Top) Div 2 - Board.YOrigin)) + ']')));
 End;
 
 {..............................................................................}
@@ -30512,7 +30524,8 @@ Var
     Why, Only, Name, Rows : String;
     Walk : IPCB_BoardIterator;
     Comp : IPCB_Component;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
 Begin
     Board := GeoMapBoard(Params, Why);
     If Board = Nil Then
@@ -30534,14 +30547,14 @@ Begin
             Try Name := Comp.Name.Text; Except Name := ''; End;
             If (Only = '') Or (Pos('|' + Name + '|', '|' + Only + '|') > 0) Then
             Begin
-                Box := Comp.BoundingRectangleNoNameComment;
+                Box_Ok := PcbBoxNoText(Comp, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
                 Rows := Rows + ',' + JsonObj(JsonStr('designator', Name)
                     + ',' + JsonBool('bottom', Comp.Layer = eBottomLayer)
                     + ',' + JsonRaw('box_mils', '['
-                        + FloatToJsonStr(CoordToMilsF(Box.Left - Board.XOrigin)) + ','
-                        + FloatToJsonStr(CoordToMilsF(Box.Bottom - Board.YOrigin)) + ','
-                        + FloatToJsonStr(CoordToMilsF(Box.Right - Board.XOrigin)) + ','
-                        + FloatToJsonStr(CoordToMilsF(Box.Top - Board.YOrigin)) + ']')
+                        + FloatToJsonStr(CoordToMilsF(Box_Left - Board.XOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box_Bottom - Board.YOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box_Right - Board.XOrigin)) + ','
+                        + FloatToJsonStr(CoordToMilsF(Box_Top - Board.YOrigin)) + ']')
                     + ',' + DesignatorLabelJson(Board, Comp));
             End;
             Comp := Walk.NextPCBObject;
@@ -30783,7 +30796,8 @@ Function GmKeep(Prim : IPCB_Primitive; Nets : String; SelOnly : Boolean;
 Var
     NName : String;
     Sel : Boolean;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
 Begin
     Result := False;
     If Nets <> '' Then
@@ -30802,8 +30816,8 @@ Begin
     If HasBox Then
     Begin
         Try
-            BR := Prim.BoundingRectangle;
-            If (BR.Right < BX1) Or (BR.Left > BX2) Or (BR.Top < BY1) Or (BR.Bottom > BY2) Then
+            BR_Ok := PcbBox(Prim, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+            If (BR_Right < BX1) Or (BR_Left > BX2) Or (BR_Top < BY1) Or (BR_Bottom > BY2) Then
                 Exit;
         Except
             Exit;
@@ -30828,7 +30842,8 @@ Var
     OutPath, TxtStr, X0, Y0, X1, Y1, Response, Why : String;
     Idx, Lyr, N, Holes, Cut, I, SC : Integer;
     NT, NA, NV, NX, NF, NR, NP, NO : Integer;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Kinds, LayerStr, Bad, Nets, NameMask, BoxStr, PName : String;
     Walk : IPCB_LayerSet;
     SelOnly, HasBox : Boolean;
@@ -31113,11 +31128,11 @@ Begin
                         { show whether the shape agrees with the contours.      }
                         SC := 0;
                         Try SC := Region.ShapeSegmentCount; Except SC := 0; End;
-                        BR := Region.BoundingRectangle;
+                        BR_Ok := RegionVertexBox(Region, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
                         Dump.Add('R' + #9 + IntToStr(Idx) + #9 + IntToStr(Lyr) + #9
                             + IntToStr(N) + #9 + X0 + #9 + Y0 + #9 + X1 + #9 + Y1 + #9
-                            + IntToStr(Holes) + #9 + IntToStr(SC) + #9 + IntToStr(BR.X1)
-                            + #9 + IntToStr(BR.Y1) + #9 + IntToStr(BR.X2) + #9 + IntToStr(BR.Y2));
+                            + IntToStr(Holes) + #9 + IntToStr(SC) + #9 + IntToStr(BR_Left)
+                            + #9 + IntToStr(BR_Bottom) + #9 + IntToStr(BR_Right) + #9 + IntToStr(BR_Top));
                         If LayerIds.IndexOf(IntToStr(Lyr)) < 0 Then LayerIds.Add(IntToStr(Lyr));
                         Inc(NR);
                     End;
@@ -31262,7 +31277,8 @@ Var
     WX1, WY1, WX2, WY2, WW, WireOff : Integer;
     RNet : IPCB_Net;
     NewLayer : TLayer;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     ShapeMode : String;
     LayerStr, Bad : String;
     Walk : IPCB_LayerSet;
@@ -31823,9 +31839,9 @@ Begin
                             Try Region.GraphicallyInvalidate; Except End;
                             { What Altium draws: its box must be the new        }
                             { outline's extent, to a mil.                       }
-                            BR := Region.BoundingRectangle;
-                            If (Abs(BR.X1 - MinX) > 10000) Or (Abs(BR.X2 - MaxX) > 10000)
-                                Or (Abs(BR.Y1 - MinY) > 10000) Or (Abs(BR.Y2 - MaxY) > 10000) Then
+                            BR_Ok := RegionVertexBox(Region, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+                            If (Abs(BR_Left - MinX) > 10000) Or (Abs(BR_Right - MaxX) > 10000)
+                                Or (Abs(BR_Bottom - MinY) > 10000) Or (Abs(BR_Top - MaxY) > 10000) Then
                                 Inc(BBoxOff);
                             { Read back: the outline must hold its new count and  }
                             { first point, the holes must still be there, and the }
@@ -32289,9 +32305,9 @@ Begin
                 N2 := -1;
                 Try N2 := Region.MainContour.Count; Except N2 := -1; End;
                 If N2 <> N Then Ok := False;
-                BR := Region.BoundingRectangle;
-                If (Abs(BR.X1 - MinX) > 10000) Or (Abs(BR.X2 - MaxX) > 10000)
-                    Or (Abs(BR.Y1 - MinY) > 10000) Or (Abs(BR.Y2 - MaxY) > 10000) Then
+                BR_Ok := RegionVertexBox(Region, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+                If (Abs(BR_Left - MinX) > 10000) Or (Abs(BR_Right - MaxX) > 10000)
+                    Or (Abs(BR_Bottom - MinY) > 10000) Or (Abs(BR_Top - MaxY) > 10000) Then
                     Ok := False;
                 If (A2 = '1') And (Not Region.TearDrop) Then Ok := False;
                 If RNet <> Nil Then

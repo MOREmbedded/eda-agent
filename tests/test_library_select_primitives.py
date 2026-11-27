@@ -71,9 +71,9 @@ def test_the_reply_counts_what_the_editor_now_holds_selected():
 def test_a_box_picks_one_primitive_within_a_thousandth_of_a_millimetre():
     fns = _fns()
     box = fns["SelectBoxMatches"]
-    assert "BR := Prim.BoundingRectangle;" in box
+    assert "BR_Ok := PcbBox(Prim," in box
     for side, org in (("Left", "OX"), ("Bottom", "OY"), ("Right", "OX"), ("Top", "OY")):
-        assert f"CoordToMM(BR.{side} - {org})" in box
+        assert f"CoordToMM(BR_{side} - {org})" in box
     assert box.count("< 0.001)") == 4
     assert "(Box <> '') And (Not SelectBoxMatches(PcbLib, Box, Prim))" in fns["SelectSpecMatches"]
 

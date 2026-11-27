@@ -78,6 +78,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
            "The folder Python and the Altium script exchange request and "
            "response files through. Must agree on both sides; "
            "`eda-agent health` checks it."),
+    EnvVar("EDA_AGENT_SCRIPTS_DIR", "Workspace and Altium bridge",
+           "unset",
+           "The folder install-scripts, update and relaunch use for the "
+           "Altium script project, ahead of the folder Altium registers, "
+           "a source checkout's `.eda-local\\scripts` and "
+           r"`%USERPROFILE%\EDA Agent\scripts`."),
     EnvVar("EDA_AGENT_POINTER_FILE", "Workspace and Altium bridge",
            r"`C:\ProgramData\eda-agent\workspace-path.txt`",
            "Where Python writes the resolved workspace path for the Altium "

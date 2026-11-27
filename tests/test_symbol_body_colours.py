@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A new symbol body takes the library's own colours, or the ones given.
 
 Bodies were always block yellow with a black outline. SkyComm's library

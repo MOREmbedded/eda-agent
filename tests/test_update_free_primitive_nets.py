@@ -90,7 +90,7 @@ def test_a_change_is_an_object_that_had_no_net_before():
     for key in ("kind", "layer", "net"):
         assert f"JsonStr('{key}'" in walk
     for key, side in (("x1", "Left"), ("y1", "Bottom"), ("x2", "Right"), ("y2", "Top")):
-        assert f"JsonFloat('{key}', CoordToMilsF(R.{side}))" in walk
+        assert f"JsonFloat('{key}', CoordToMilsF(R_{side}))" in walk
 
 
 def test_the_seen_list_is_sorted_for_lookups():

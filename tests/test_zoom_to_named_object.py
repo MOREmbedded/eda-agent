@@ -71,8 +71,10 @@ def test_names_compare_without_case():
 
 def test_the_box_is_the_bounding_rectangle():
     body = _routine("Gen_ZoomToObject")
-    for corner in ("X1", "Y1", "X2", "Y2"):
-        assert f"{corner} := Obj.BoundingRectangle.{corner};" in body, corner
+    # Built from the object's own coordinates: a BoundingRectangle's
+    # fields halt the script on AD 26.12.2.
+    assert "SB_Ok := SchBox(Obj, SB_Left, SB_Bottom, SB_Right, SB_Top);" in body
+    assert "X1 := SB_Left; Y1 := SB_Bottom; X2 := SB_Right; Y2 := SB_Top;" in body
 
 
 def test_the_box_fills_scale_percent_of_the_view_centred():

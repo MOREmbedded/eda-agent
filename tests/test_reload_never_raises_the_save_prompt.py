@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A reload or close never raises Altium's save prompt for other documents.
 
 app_reload_document(discard_changes=True) closed the QPA9903 SchLib and

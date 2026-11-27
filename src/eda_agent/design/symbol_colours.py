@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The fill and outline a new symbol body is drawn with.
 
 Bodies were always Altium's block yellow (8454143) with a black outline.

@@ -297,7 +297,7 @@ def test_the_region_create_flags_binds_and_reads_back_before_it_counts():
     assert reg.index("Region.UpdateContourFromShape(True);") < add
     assert reg.index("Region.TearDrop := True;") < add
     assert reg.index("BindPrimitiveToNet(RNet, Region);") < add
-    for check in ("Region.MainContour.Count", "Region.BoundingRectangle",
+    for check in ("Region.MainContour.Count", "RegionVertexBox(Region,",
                   "Not Region.TearDrop", "Region.Net.Name <> A4"):
         assert reg.index(check) > add, check
     assert "Inc(CreateOff);" in reg
@@ -555,7 +555,7 @@ def test_a_shape_based_region_does_not_keep_its_old_shape():
     assert "Region.ShapeSegmentCount := 0;" in shape
     assert "Region.UpdateContourFromShape(True);" in shape
     assert shape.index("Region.UpdateContourFromShape(True);") < shape.index(
-        "BR := Region.BoundingRectangle;")
+        "BR_Ok := RegionVertexBox(Region,")
     assert "Inc(BBoxOff);" in shape
     assert "If (ShapeMode <> 'keep') And (ShapeMode <> 'clear') Then ShapeMode := 'rebuild';" in body
 

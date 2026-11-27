@@ -1046,13 +1046,14 @@ End;
 { TopYSize for the copper.                                                  }
 Function PCBGetBounds(Obj : IPCB_Primitive; PropName : String) : String;
 Var
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
 Begin
-    Box := Obj.BoundingRectangle;
-    If PropName = 'BoundsLeft' Then Result := FloatToJsonStr(CoordToMilsF(Box.Left))
-    Else If PropName = 'BoundsBottom' Then Result := FloatToJsonStr(CoordToMilsF(Box.Bottom))
-    Else If PropName = 'BoundsRight' Then Result := FloatToJsonStr(CoordToMilsF(Box.Right))
-    Else If PropName = 'BoundsTop' Then Result := FloatToJsonStr(CoordToMilsF(Box.Top))
+    Box_Ok := PcbBox(Obj, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
+    If PropName = 'BoundsLeft' Then Result := FloatToJsonStr(CoordToMilsF(Box_Left))
+    Else If PropName = 'BoundsBottom' Then Result := FloatToJsonStr(CoordToMilsF(Box_Bottom))
+    Else If PropName = 'BoundsRight' Then Result := FloatToJsonStr(CoordToMilsF(Box_Right))
+    Else If PropName = 'BoundsTop' Then Result := FloatToJsonStr(CoordToMilsF(Box_Top))
     Else Result := '';
 End;
 
@@ -1885,19 +1886,20 @@ End;
 Procedure SetTextMirrorInPlace(Txt : IPCB_Text; Mirror : Boolean);
 Var
     Owner : IPCB_Component;
-    Before, After : TCoordRect;
+    Before_Left, Before_Bottom, Before_Right, Before_Top, After_Left, After_Bottom, After_Right, After_Top : Integer;
+    Before_Ok, After_Ok : Boolean;
 Begin
     If Txt.MirrorFlag = Mirror Then Exit;
     Owner := Nil;
     If Txt.InComponent Then Owner := Txt.Component;
     If Owner <> Nil Then Owner.BeginModify;
-    Before := Txt.BoundingRectangle;
+    Before_Ok := PcbTextBox(Txt, Before_Left, Before_Bottom, Before_Right, Before_Top); If Not Before_Ok Then NoBox(0);
     Txt.BeginModify;
     Txt.MirrorFlag := Mirror;
     Txt.EndModify;
-    After := Txt.BoundingRectangle;
-    If (After.Left <> Before.Left) Or (After.Bottom <> Before.Bottom) Then
-        Txt.MoveByXY(Before.Left - After.Left, Before.Bottom - After.Bottom);
+    After_Ok := PcbTextBox(Txt, After_Left, After_Bottom, After_Right, After_Top); If Not After_Ok Then NoBox(0);
+    If (After_Left <> Before_Left) Or (After_Bottom <> Before_Bottom) Then
+        Txt.MoveByXY(Before_Left - After_Left, Before_Bottom - After_Bottom);
     Txt.GraphicallyInvalidate;
     If Owner <> Nil Then Owner.EndModify;
 End;

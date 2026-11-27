@@ -28,6 +28,7 @@ Set them in your MCP client's server config (an `env` block), or for your Window
 | Variable | Default | What it does |
 |---|---|---|
 | `EDA_AGENT_WORKSPACE` | `%USERPROFILE%\EDA Agent\workspace` | The folder Python and the Altium script exchange request and response files through. Must agree on both sides; `eda-agent health` checks it. |
+| `EDA_AGENT_SCRIPTS_DIR` | unset | The folder install-scripts, update and relaunch use for the Altium script project, ahead of the folder Altium registers, a source checkout's `.eda-local\scripts` and `%USERPROFILE%\EDA Agent\scripts`. |
 | `EDA_AGENT_POINTER_FILE` | `C:\ProgramData\eda-agent\workspace-path.txt` | Where Python writes the resolved workspace path for the Altium script to read (DelphiScript cannot read environment variables). Mainly for tests. |
 | `EDA_AGENT_ALTIUM_PROCESS` | `X2.exe`, then `DXP.exe` | The Altium process name `doctor` and the bridge look for, if yours differs. |
 | `EDA_AGENT_ALTIUM_DIR` | found from the registry | Altium's install folder, used to read its translated menu and dialog captions. Set it to aim at a second Altium version. |

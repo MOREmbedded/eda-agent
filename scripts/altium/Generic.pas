@@ -2857,6 +2857,8 @@ End;
 Function GetSchPropertyGated(Obj : ISch_GraphicalObject; PropName : String;
     Gate : Integer; Extra : Integer) : String;
 Var
+    SB_Left, SB_Bottom, SB_Right, SB_Top : Integer;
+    SB_Ok : Boolean;
     NoERC : ISch_NoERC;
     R : ISch_Rectangle;
     L : ISch_Line;
@@ -3384,10 +3386,20 @@ Begin
         // Audit code reads X1/Y1/X2/Y2 to detect overlapping component
         // bodies. The same accessors are valid on other geometric sch
         // objects; we late-bind so the get-side stays type-agnostic.
-        Else If PropName = 'BoundingRectangle.X1' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.X1))
-        Else If PropName = 'BoundingRectangle.Y1' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.Y1))
-        Else If PropName = 'BoundingRectangle.X2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.X2))
-        Else If PropName = 'BoundingRectangle.Y2' Then Result := FloatToJsonStr(CoordToMilsF(Obj.BoundingRectangle.Y2))
+        { Built from the object's own coordinates (SchBox): the fields of  }
+        { a BoundingRectangle halt the script on AD 26.12.2.             }
+        Else If (PropName = 'BoundingRectangle.X1') Or (PropName = 'BoundingRectangle.Y1')
+             Or (PropName = 'BoundingRectangle.X2') Or (PropName = 'BoundingRectangle.Y2') Then
+        Begin
+            SB_Ok := SchBox(Obj, SB_Left, SB_Bottom, SB_Right, SB_Top);
+            If SB_Ok Then
+            Begin
+                If PropName = 'BoundingRectangle.X1' Then Result := FloatToJsonStr(CoordToMilsF(SB_Left))
+                Else If PropName = 'BoundingRectangle.Y1' Then Result := FloatToJsonStr(CoordToMilsF(SB_Bottom))
+                Else If PropName = 'BoundingRectangle.X2' Then Result := FloatToJsonStr(CoordToMilsF(SB_Right))
+                Else Result := FloatToJsonStr(CoordToMilsF(SB_Top));
+            End;
+        End
 
         // A line has two ends, not vertices (see SchLineEndProperty).
         Else If (Obj.ObjectId = eLine) And (Pos('VERT', UpperCase(PropName)) = 1) Then
@@ -6973,20 +6985,21 @@ End;
 { False when there is no board or its outline has no size.                 }
 Function ZoomOnBoardOutline(Board : IPCB_Board) : Boolean;
 Var
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     L, B, R, T, M : TCoord;
 Begin
     Result := False;
     If Board = Nil Then Exit;
     Try
-        BR := Board.BoardOutline.BoundingRectangle;
+        BR_Ok := BoardOutlineBox(Board, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
     Except
         Exit;
     End;
-    L := BR.Left;
-    B := BR.Bottom;
-    R := BR.Right;
-    T := BR.Top;
+    L := BR_Left;
+    B := BR_Bottom;
+    R := BR_Right;
+    T := BR_Top;
     If (R <= L) Or (T <= B) Then Exit;
     M := (R - L) Div 20;
     If (T - B) Div 20 > M Then M := (T - B) Div 20;
@@ -8006,6 +8019,8 @@ End;
 
 Function Gen_ZoomToObject(Params : String; RequestId : String) : String;
 Var
+    SB_Left, SB_Bottom, SB_Right, SB_Top : Integer;
+    SB_Ok : Boolean;
     NameStr, NameUpper, ScaleStr, IndexStr, FocusedKind, ObjName : String;
     Matches, Entry, Picked : String;
     Workspace : IWorkspace;
@@ -8086,10 +8101,12 @@ Begin
                 ObjName := SchZoomObjectName(Obj);
                 If (ObjName <> '') And (UpperCase(ObjName) = NameUpper) Then
                 Begin
-                    X1 := Obj.BoundingRectangle.X1;
-                    Y1 := Obj.BoundingRectangle.Y1;
-                    X2 := Obj.BoundingRectangle.X2;
-                    Y2 := Obj.BoundingRectangle.Y2;
+                    X1 := 0; Y1 := 0; X2 := 0; Y2 := 0;
+                    SB_Ok := SchBox(Obj, SB_Left, SB_Bottom, SB_Right, SB_Top);
+                    If SB_Ok Then
+                    Begin
+                        X1 := SB_Left; Y1 := SB_Bottom; X2 := SB_Right; Y2 := SB_Top;
+                    End;
                     Count := Count + 1;
                     Entry := '{"kind":"' + SchZoomKindName(Obj.ObjectId) + '",'
                         + '"name":"' + EscapeJsonString(ObjName) + '",'
@@ -10967,6 +10984,8 @@ End;
 { what the user drew.                                                        }
 Function SheetTemplateBoxes(SchDoc : ISch_Document) : String;
 Var
+    SB_Left, SB_Bottom, SB_Right, SB_Top : Integer;
+    SB_Ok : Boolean;
     Iter, TplIter : ISch_Iterator;
     Obj, Child : ISch_GraphicalObject;
     Box : String;
@@ -10987,10 +11006,12 @@ Begin
                     Begin
                         Box := '';
                         Try
-                            Box := '[' + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X1)) + ','
-                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y1)) + ','
-                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.X2)) + ','
-                                + FloatToJsonStr(CoordToMilsF(Child.BoundingRectangle.Y2)) + ']';
+                            SB_Ok := SchBox(Child, SB_Left, SB_Bottom, SB_Right, SB_Top);
+                            If SB_Ok Then
+                                Box := '[' + FloatToJsonStr(CoordToMilsF(SB_Left)) + ','
+                                    + FloatToJsonStr(CoordToMilsF(SB_Bottom)) + ','
+                                    + FloatToJsonStr(CoordToMilsF(SB_Right)) + ','
+                                    + FloatToJsonStr(CoordToMilsF(SB_Top)) + ']';
                         Except
                             Box := '';
                         End;
@@ -12274,6 +12295,8 @@ End;
 { it or on its edge, and what the compiled design says it covers.           }
 Function Gen_GetBlankets(Params : String; RequestId : String) : String;
 Var
+    SB_Left, SB_Bottom, SB_Right, SB_Top : Integer;
+    SB_Ok : Boolean;
     SchDoc : ISch_Document;
     Iter, PIter, CIter : ISch_Iterator;
     Blanket, PS : ISch_GraphicalObject;
@@ -12308,10 +12331,14 @@ Begin
             Try Coll := Blanket.Collapsed; Except End;
             BX1 := 0; BY1 := 0; BX2 := 0; BY2 := 0;
             Try
-                BX1 := CoordToMilsF(Blanket.BoundingRectangle.X1);
-                BY1 := CoordToMilsF(Blanket.BoundingRectangle.Y1);
-                BX2 := CoordToMilsF(Blanket.BoundingRectangle.X2);
-                BY2 := CoordToMilsF(Blanket.BoundingRectangle.Y2);
+                SB_Ok := SchBox(Blanket, SB_Left, SB_Bottom, SB_Right, SB_Top);
+                If SB_Ok Then
+                Begin
+                    BX1 := CoordToMilsF(SB_Left);
+                    BY1 := CoordToMilsF(SB_Bottom);
+                    BX2 := CoordToMilsF(SB_Right);
+                    BY2 := CoordToMilsF(SB_Top);
+                End;
             Except End;
 
             { Directives: inside the blanket's own container, and on the  }
@@ -14532,11 +14559,12 @@ End;
 
 Function SheetFrameBox(Obj : ISch_GraphicalObject) : String;
 Var
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
 Begin
-    R := Obj.BoundingRectangle;
-    Result := '[' + FloatToJsonStr(CoordToMilsF(R.X1)) + ',' + FloatToJsonStr(CoordToMilsF(R.Y1))
-        + ',' + FloatToJsonStr(CoordToMilsF(R.X2)) + ',' + FloatToJsonStr(CoordToMilsF(R.Y2)) + ']';
+    R_Ok := SchBox(Obj, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
+    Result := '[' + FloatToJsonStr(CoordToMilsF(R_Left)) + ',' + FloatToJsonStr(CoordToMilsF(R_Bottom))
+        + ',' + FloatToJsonStr(CoordToMilsF(R_Right)) + ',' + FloatToJsonStr(CoordToMilsF(R_Top)) + ']';
 End;
 
 Function Gen_GetSheetFrame(Params : String; RequestId : String) : String;
@@ -20335,7 +20363,8 @@ Var
     PrimJson, PrimPart, CompHeader, ParamsJson : String;
     NumPrim, NumParams : Integer;
     Loc : TLocation;
-    BBox : TCoordRect;
+    BBox_Left, BBox_Bottom, BBox_Right, BBox_Top : Integer;
+    BBox_Ok : Boolean;
     HasBBox : Boolean;
     VtxN, V : Integer;
     Vert : TLocation;
@@ -20456,7 +20485,7 @@ Begin
                 Try LibRef := Comp.LibReference; Except End;
                 HasBBox := False;
                 Try
-                    BBox := Comp.BoundingRectangle;
+                    BBox_Ok := SchBox(Comp, BBox_Left, BBox_Bottom, BBox_Right, BBox_Top); If Not BBox_Ok Then NoBox(0);
                     HasBBox := True;
                 Except
                 End;
@@ -20464,10 +20493,10 @@ Begin
                 Begin
                     { Fallback: a small box at the component origin so the    }
                     { renderer still has something to draw if the API throws. }
-                    BBox.X1 := Loc.X - MilsToCoord(100);
-                    BBox.Y1 := Loc.Y - MilsToCoord(100);
-                    BBox.X2 := Loc.X + MilsToCoord(100);
-                    BBox.Y2 := Loc.Y + MilsToCoord(100);
+                    BBox_Left := Loc.X - MilsToCoord(100);
+                    BBox_Bottom := Loc.Y - MilsToCoord(100);
+                    BBox_Right := Loc.X + MilsToCoord(100);
+                    BBox_Top := Loc.Y + MilsToCoord(100);
                 End;
                 { Component header without primitives. The full record gets   }
                 { written after the primitives are collected, since v2 nests  }
@@ -20479,10 +20508,10 @@ Begin
                     ',"y":' + FloatToJsonStr(CoordToMilsF(Loc.Y)) +
                     ',"rot":' + IntToStr(Comp.Orientation * 90) +
                     ',"mirror":' + BoolToJsonStr(Comp.IsMirrored) +
-                    ',"bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(BBox.X1)) +
-                    ',"y1":' + FloatToJsonStr(CoordToMilsF(BBox.Y1)) +
-                    ',"x2":' + FloatToJsonStr(CoordToMilsF(BBox.X2)) +
-                    ',"y2":' + FloatToJsonStr(CoordToMilsF(BBox.Y2)) + '}';
+                    ',"bbox":{"x1":' + FloatToJsonStr(CoordToMilsF(BBox_Left)) +
+                    ',"y1":' + FloatToJsonStr(CoordToMilsF(BBox_Bottom)) +
+                    ',"x2":' + FloatToJsonStr(CoordToMilsF(BBox_Right)) +
+                    ',"y2":' + FloatToJsonStr(CoordToMilsF(BBox_Top)) + '}';
 
                 { Symbol-internal primitives -- iterate the component's own   }
                 { children for rect / line / arc / polyline / polygon /       }
@@ -20940,7 +20969,8 @@ Var
     NumTracks, NumArcs, NumPads, NumVias, NumTexts, NumOutline : Integer;
     NumRegions, NumComps : Integer;
     LayerName, ShapeStr, NetName, TextStr, PadName, HoleStr, PlatedStr : String;
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     I, K, PtCount, EL, EB, ER, ET, Seen : Integer;
     Seg : TPolySegment;
     RespJson : String;
@@ -21002,8 +21032,8 @@ Begin
 
     { From the outline's segments: its cached rectangle went stale after a }
     { reshape and the renders built on this bbox clipped the board.         }
-    BR := Board.BoardOutline.BoundingRectangle;
-    EL := BR.X1; EB := BR.Y1; ER := BR.X2; ET := BR.Y2;
+    BR_Ok := BoardOutlineBox(Board, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+    EL := BR_Left; EB := BR_Bottom; ER := BR_Right; ET := BR_Top;
     OutlineExtents(Board.BoardOutline, EL, EB, ER, ET);
 
     { Counters only. Each array is assembled from its Parts list after }

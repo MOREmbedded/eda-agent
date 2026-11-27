@@ -3706,35 +3706,6 @@ End;
 { (internal - Off) / Scale. HasArc tells whether any edge is               }
 { an arc. '' when there is no shape or it cannot be read. A segment is read }
 { whole into a local first (MakeRegionShapes.pas reads them the same way).  }
-{ A region's box from its outline vertices, the way RegionShapeJson reads }
-{ them; False and the box untouched when there are none.                  }
-Function RegionVertexBox(Region : IPCB_Region; Var X1 : Integer; Var Y1 : Integer;
-    Var X2 : Integer; Var Y2 : Integer) : Boolean;
-Var
-    Seg : TPolySegment;
-    I, N : Integer;
-Begin
-    Result := False;
-    N := 0;
-    Try N := Region.ShapeSegmentCount; Except N := 0; End;
-    For I := 0 To N - 1 Do
-    Begin
-        Seg := Region.ShapeSegments(I);
-        If Not Result Then
-        Begin
-            X1 := Seg.vx; X2 := Seg.vx; Y1 := Seg.vy; Y2 := Seg.vy;
-            Result := True;
-        End
-        Else
-        Begin
-            If Seg.vx < X1 Then X1 := Seg.vx;
-            If Seg.vx > X2 Then X2 := Seg.vx;
-            If Seg.vy < Y1 Then Y1 := Seg.vy;
-            If Seg.vy > Y2 Then Y2 := Seg.vy;
-        End;
-    End;
-End;
-
 Function RegionShapeJson(Region : IPCB_Region; Scale : Double; OffX : Double; OffY : Double;
     Var HasArc : Boolean) : String;
 Var
@@ -5191,7 +5162,8 @@ Var
     PadN, PrimN, TextN, BodyCount, StepCount, DesigCount : Integer;
     SumX, SumY, PadX, PadY, LayerId, ModelKind : Integer;
     CenterX, CenterY, TxtX, TxtY : TCoord;
-    TRect : TCoordRect;
+    TRect_Left, TRect_Bottom, TRect_Right, TRect_Top : Integer;
+    TRect_Ok : Boolean;
     Body : IPCB_ComponentBody;
     BodyModel : IPCB_Model;
 Begin
@@ -5443,9 +5415,9 @@ Begin
                                 TxtY := Txt.YLocation;
                             Except End;
                             Try
-                                TRect := Txt.BoundingRectangle;
-                                TxtX := (TRect.X1 + TRect.X2) Div 2;
-                                TxtY := (TRect.Y1 + TRect.Y2) Div 2;
+                                TRect_Ok := PcbTextBox(Txt, TRect_Left, TRect_Bottom, TRect_Right, TRect_Top); If Not TRect_Ok Then NoBox(0);
+                                TxtX := (TRect_Left + TRect_Right) Div 2;
+                                TxtY := (TRect_Bottom + TRect_Top) Div 2;
                             Except End;
                             { x/y and coord_x/coord_y are the BBOX CENTRE (what
                               "centred" means). anchor_x/anchor_y are XLocation,
@@ -5535,7 +5507,8 @@ Var
     SrvDoc : IServerDocument;
     Lyr : TLayer;
     XOrg, YOrg, TgtX, TgtY, CurCX, CurCY : TCoord;
-    TRect : TCoordRect;
+    TRect_Left, TRect_Bottom, TRect_Right, TRect_Top : Integer;
+    TRect_Ok : Boolean;
     NewX, NewY, LayerId : Integer;
     WidthMils : Double;
     NewH : Double;
@@ -6001,7 +5974,8 @@ Var
     DoneKeys : String;
     Lyr : TLayer;
     XOrg, YOrg, TgtX, TgtY, CurCX, CurCY : TCoord;
-    TRect : TCoordRect;
+    TRect_Left, TRect_Bottom, TRect_Right, TRect_Top : Integer;
+    TRect_Ok : Boolean;
     ImmovableJson : String;
     I, NewX, NewY, LayerId : Integer;
     WidthMils : Double;
@@ -6483,7 +6457,8 @@ Var
     GrpIter : IPCB_GroupIterator;
     Txt, Desig : IPCB_Text;
     Pad : IPCB_Pad;
-    TRect, FRect : TCoordRect;
+    TRect_Left, TRect_Bottom, TRect_Right, TRect_Top, FRect_Left, FRect_Bottom, FRect_Right, FRect_Top : Integer;
+    TRect_Ok, FRect_Ok : Boolean;
     PadMinX, PadMinY, PadMaxX, PadMaxY : TCoord;
     PadN : Integer;
 Begin
@@ -6593,8 +6568,8 @@ Begin
 
     { Assign the whole record; writing individual fields of an uninitialised
       local raises in DelphiScript. }
-    TRect := Desig.BoundingRectangle;
-    FRect := Target.BoundingRectangle;
+    TRect_Ok := PcbTextBox(Desig, TRect_Left, TRect_Bottom, TRect_Right, TRect_Top); If Not TRect_Ok Then NoBox(0);
+    FRect_Ok := PcbGroupBox(Target, True, FRect_Left, FRect_Bottom, FRect_Right, FRect_Top); If Not FRect_Ok Then NoBox(0);
 
     { Every text in the footprint, with the properties that could plausibly make
       one refuse to persist a move: layer, rotation, mirror, lock/selection, and
@@ -6676,15 +6651,15 @@ Begin
         ',"texts":' + TextsJson +
         ',"fp_x":' + IntToStr(Target.X) +
         ',"fp_y":' + IntToStr(Target.Y) +
-        ',"fp_rect":[' + IntToStr(FRect.X1) + ',' + IntToStr(FRect.Y1) + ',' +
-                         IntToStr(FRect.X2) + ',' + IntToStr(FRect.Y2) + ']' +
+        ',"fp_rect":[' + IntToStr(FRect_Left) + ',' + IntToStr(FRect_Bottom) + ',' +
+                         IntToStr(FRect_Right) + ',' + IntToStr(FRect_Top) + ']' +
         ',"pad_count":' + IntToStr(PadN) +
         ',"pad_rect":[' + IntToStr(PadMinX) + ',' + IntToStr(PadMinY) + ',' +
                           IntToStr(PadMaxX) + ',' + IntToStr(PadMaxY) + ']' +
         ',"desig_anchor":[' + IntToStr(Desig.XLocation) + ',' +
                               IntToStr(Desig.YLocation) + ']' +
-        ',"desig_rect":[' + IntToStr(TRect.X1) + ',' + IntToStr(TRect.Y1) + ',' +
-                            IntToStr(TRect.X2) + ',' + IntToStr(TRect.Y2) + ']' +
+        ',"desig_rect":[' + IntToStr(TRect_Left) + ',' + IntToStr(TRect_Bottom) + ',' +
+                            IntToStr(TRect_Right) + ',' + IntToStr(TRect_Top) + ']' +
         ',"desig_size":' + IntToStr(Desig.Size) +
         ',"desig_width":' + IntToStr(Desig.Width) +
         ',"desig_text":"' + EscapeJsonString(Desig.Text) + '"}';
@@ -15655,7 +15630,8 @@ End;
 { within 0.001 mm: one exact primitive when names cannot tell them apart.   }
 Function SelectBoxMatches(PcbLib : IPCB_Library; Box : String; Prim : IPCB_Primitive) : Boolean;
 Var
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     Org : IPCB_LibComponent;
     OX, OY : TCoord;
     L, B, R, T : Double;
@@ -15673,11 +15649,11 @@ Begin
     R := StrToFloatDef(SplitBoxField(Box, 2), -1e9);
     T := StrToFloatDef(SplitBoxField(Box, 3), -1e9);
     Try
-        BR := Prim.BoundingRectangle;
-        Result := (Abs(CoordToMM(BR.Left - OX) - L) < 0.001)
-            And (Abs(CoordToMM(BR.Bottom - OY) - B) < 0.001)
-            And (Abs(CoordToMM(BR.Right - OX) - R) < 0.001)
-            And (Abs(CoordToMM(BR.Top - OY) - T) < 0.001);
+        BR_Ok := PcbBox(Prim, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+        Result := (Abs(CoordToMM(BR_Left - OX) - L) < 0.001)
+            And (Abs(CoordToMM(BR_Bottom - OY) - B) < 0.001)
+            And (Abs(CoordToMM(BR_Right - OX) - R) < 0.001)
+            And (Abs(CoordToMM(BR_Top - OY) - T) < 0.001);
     Except Result := False; End;
 End;
 
@@ -18640,15 +18616,16 @@ End;
 { The centre of a body's box, relative to the footprint origin (OrgX, OrgY). }
 Procedure BodyCentre(Body : IPCB_ComponentBody; OrgX, OrgY : TCoord; Var CX, CY : Double);
 Var
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
 Begin
     CX := 0;
     CY := 0;
     Try
-        R := Body.BoundingRectangle;
+        R_Ok := RegionVertexBox(Body, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
         { In mils from Altium's units (10000 to the mil), half-units kept. }
-        CX := ((R.Left + R.Right) / 2 - OrgX) / 10000;
-        CY := ((R.Bottom + R.Top) / 2 - OrgY) / 10000;
+        CX := ((R_Left + R_Right) / 2 - OrgX) / 10000;
+        CY := ((R_Bottom + R_Top) / 2 - OrgY) / 10000;
     Except End;
 End;
 
@@ -19423,7 +19400,8 @@ Var
     Via : IPCB_Via;
     Fill : IPCB_Fill;
     Txt : IPCB_Text;
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
     A, B : String;
 Begin
     Result := IntToStr(Prim.ObjectId) + '|' + IntToStr(Prim.Layer) + '|';
@@ -19465,8 +19443,8 @@ Begin
     End
     Else
     Begin
-        R := Prim.BoundingRectangle;
-        Result := Result + IntToStr(R.Left) + ',' + IntToStr(R.Bottom) + ',' + IntToStr(R.Right) + ',' + IntToStr(R.Top);
+        R_Ok := PcbBox(Prim, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
+        Result := Result + IntToStr(R_Left) + ',' + IntToStr(R_Bottom) + ',' + IntToStr(R_Right) + ',' + IntToStr(R_Top);
     End;
 End;
 
@@ -19534,7 +19512,8 @@ Var
     Keys, PadNames, Group, FpNames : TStringList;
     I, J, K, G1, G2, TopCount, BottomCount, Checked, FlaggedCount, DupPrims : Integer;
     MinX, MinY, MaxX, MaxY, OX, OY : Integer;
-    R : TCoordRect;
+    R_Left, R_Bottom, R_Right, R_Top : Integer;
+    R_Ok : Boolean;
     Touching, HasPad, AnyBox : Boolean;
     DoDupPads, DoDupPrims, DoMissing, DoMirror, DoOffset, DoShort, DoUnconn, DoDupFp : Boolean;
 Begin
@@ -19662,18 +19641,18 @@ Begin
                     End;
                     If Prim.ObjectId <> eTextObject Then
                     Begin
-                        R := Prim.BoundingRectangle;
+                        R_Ok := PcbBox(Prim, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
                         If Not AnyBox Then
                         Begin
-                            MinX := R.Left; MinY := R.Bottom; MaxX := R.Right; MaxY := R.Top;
+                            MinX := R_Left; MinY := R_Bottom; MaxX := R_Right; MaxY := R_Top;
                             AnyBox := True;
                         End
                         Else
                         Begin
-                            If R.Left < MinX Then MinX := R.Left;
-                            If R.Bottom < MinY Then MinY := R.Bottom;
-                            If R.Right > MaxX Then MaxX := R.Right;
-                            If R.Top > MaxY Then MaxY := R.Top;
+                            If R_Left < MinX Then MinX := R_Left;
+                            If R_Bottom < MinY Then MinY := R_Bottom;
+                            If R_Right > MaxX Then MaxX := R_Right;
+                            If R_Top > MaxY Then MaxY := R_Top;
                         End;
                     End;
                 End;
@@ -19727,10 +19706,10 @@ Begin
                         If DoUnconn And (Not HasPad) Then
                         Begin
                             Prim := Copper.Items[I];
-                            R := Prim.BoundingRectangle;
+                            R_Ok := PcbBox(Prim, R_Left, R_Bottom, R_Right, R_Top); If Not R_Ok Then NoBox(0);
                             Problems := Problems + ',' + PcbCheckProblem('unconnected_copper',
-                                'copper near ' + FloatToJsonStr(CoordToMilsF((R.Left + R.Right) Div 2 - OX)) + ', '
-                                + FloatToJsonStr(CoordToMilsF((R.Bottom + R.Top) Div 2 - OY))
+                                'copper near ' + FloatToJsonStr(CoordToMilsF((R_Left + R_Right) Div 2 - OX)) + ', '
+                                + FloatToJsonStr(CoordToMilsF((R_Bottom + R_Top) Div 2 - OY))
                                 + ' mil touches no pad');
                         End;
                         If DoShort And (Length(Names) - Length(StringReplace(Names, #9, '', MkSet(rfReplaceAll))) > 2) Then
@@ -20498,7 +20477,8 @@ Var
     GrpIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
     Pad : IPCB_Pad;
-    Box : TCoordRect;
+    Box_Left, Box_Bottom, Box_Right, Box_Top : Integer;
+    Box_Ok : Boolean;
     Cx, Cy, Hx, Hy : TCoord;
     Rot : Integer;
 Begin
@@ -20515,13 +20495,13 @@ Begin
             Pad := GrpIter.FirstPCBObject;
             While Pad <> Nil Do
             Begin
-                Box := Pad.BoundingRectangle;
+                Box_Ok := PcbBox(Pad, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
                 Rot := Round(Pad.Rotation) Mod 360;
                 If Rot < 0 Then Rot := Rot + 360;
                 If (Rot = 0) Or (Rot = 90) Or (Rot = 180) Or (Rot = 270) Then
                 Begin
-                    Cx := (Box.Left + Box.Right) Div 2;
-                    Cy := (Box.Bottom + Box.Top) Div 2;
+                    Cx := (Box_Left + Box_Right) Div 2;
+                    Cy := (Box_Bottom + Box_Top) Div 2;
                     Hx := Pad.TopXSize Div 2;
                     Hy := Pad.TopYSize Div 2;
                     If (Rot = 90) Or (Rot = 270) Then
@@ -20532,7 +20512,7 @@ Begin
                     GrowBox(L, B, R, T, Cx - Hx, Cy - Hy, Cx + Hx, Cy + Hy);
                 End
                 Else
-                    GrowBox(L, B, R, T, Box.Left, Box.Bottom, Box.Right, Box.Top);
+                    GrowBox(L, B, R, T, Box_Left, Box_Bottom, Box_Right, Box_Top);
                 Pad := GrpIter.NextPCBObject;
             End;
             Exit;
@@ -20547,8 +20527,8 @@ Begin
         Begin
             If (Source = 'body') Or (Prim.Layer = CourtLayer) Then
             Begin
-                Box := Prim.BoundingRectangle;
-                GrowBox(L, B, R, T, Box.Left, Box.Bottom, Box.Right, Box.Top);
+                Box_Ok := PcbBox(Prim, Box_Left, Box_Bottom, Box_Right, Box_Top); If Not Box_Ok Then NoBox(0);
+                GrowBox(L, B, R, T, Box_Left, Box_Bottom, Box_Right, Box_Top);
             End;
             Prim := GrpIter.NextPCBObject;
         End;
@@ -20666,7 +20646,8 @@ Var
     LayerStr, CourtStr, Wanted, Source, Used, UnitsStr, FpName, Found : String;
     Items, Skipped, Names, SavedName : String;
     Layer, CourtLayer : TLayer;
-    TR : TCoordRect;
+    TR_Left, TR_Bottom, TR_Right, TR_Top : Integer;
+    TR_Ok : Boolean;
     BL, BB, BR, BT : TCoord;
     Width, TextH, Size, Cx, Cy, W, H, Dx, Dy : TCoord;
     WantText, Replace, TempMade, TempNow : Boolean;
@@ -20912,11 +20893,11 @@ Begin
                 AttachToCurrentFootprint(PcbLib, Footprint, Text);
                 { Refined from the measured extent when it is believable:  }
                 { not empty, and no further off than the estimate could be. }
-                TR := Text.BoundingRectangle;
-                If (TR.Right > TR.Left) And (TR.Top > TR.Bottom) Then
+                TR_Ok := PcbTextBox(Text, TR_Left, TR_Bottom, TR_Right, TR_Top); If Not TR_Ok Then NoBox(0);
+                If (TR_Right > TR_Left) And (TR_Top > TR_Bottom) Then
                 Begin
-                    Dx := Cx - (TR.Left + TR.Right) Div 2;
-                    Dy := Cy - (TR.Bottom + TR.Top) Div 2;
+                    Dx := Cx - (TR_Left + TR_Right) Div 2;
+                    Dy := Cy - (TR_Bottom + TR_Top) Div 2;
                     If (Abs(Dx) < Size * 11) And (Abs(Dy) < Size * 11) Then
                     Begin
                         PCBServer.SendMessageToRobots(Text.I_ObjectAddress,

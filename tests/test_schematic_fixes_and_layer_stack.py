@@ -220,7 +220,7 @@ def test_the_pascal_writes_each_text_inside_its_modify_brackets():
     command = _routine("PCB.pas", "PCB_SetDesignatorTexts")
     assert "PCBServer.SystemOptions.DoOnlineDRC := DrcWasOn" in command
     assert "NextBatchOp(Ops)" in command
-    assert "BoundingRectangleNoNameComment" in _routine("PCB.pas", "PCB_PartOutlines")
+    assert "PcbBoxNoText(" in _routine("PCB.pas", "PCB_PartOutlines")
 
 
 # --- the layer stack ---------------------------------------------------------------------

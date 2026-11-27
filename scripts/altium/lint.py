@@ -570,7 +570,27 @@ RULE_PASCAL_IN_OPERATOR = LineRule(
 )
 
 
+# A rectangle read off an object. On AD 26.12.2 BoundingRectangle (and a
+# room's BoundingRect, the editor's GraphicalView_ViewportRect) hands the
+# script an interface whose fields it cannot name: .Left, .X1 and .GetLeft
+# each halt the script with "Undeclared identifier", past any Try (measured
+# 2026-11-27, every footprint build's readback crashed on it). Boxes come
+# from the object's own coordinates through PcbBox / SchBox and the other
+# helpers in Utils.pas; a TCoordRect local is the same mistake waiting.
+RULE_RECTANGLE_FIELDS = LineRule(
+    name="rectangle-fields",
+    pattern=re.compile(
+        r"\.(?:BoundingRectangle\w*|BoundingRect|GraphicalView_ViewportRect)\b"
+        r"|:\s*TCoordRect\b", re.IGNORECASE),
+    severity="error",
+    memory="altium_sdk_ground_truth.md",
+    description="a rectangle's fields halt the script on AD 26.12; use PcbBox, "
+                "SchBox or another box helper in Utils.pas",
+)
+
+
 LINE_RULES = [
+    RULE_RECTANGLE_FIELDS,
     RULE_PASCAL_IN_OPERATOR,
     RULE_EMPTY_LITERAL_ARG,
     RULE_LAYERSET_OBJECT_FILTER,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Library tools never send the agent to app_save_all.
 
 A QPA9903 SchLib was saved by following the library tools' own advice,

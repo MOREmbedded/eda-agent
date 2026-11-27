@@ -110,8 +110,8 @@ def test_the_longest_line_is_measured_line_by_line():
     assert "P := Pos(#10, Rest);" in body
     assert "If Copy(Line, Length(Line), 1) = #13 Then" in body
     one = body.index("TextObj.Text := Line;")
-    assert one < body.index("Box := TextObj.BoundingRectangle;")
-    assert "W := CoordToMilsF(Box.Right - Box.Left);" in body
+    assert one < body.index("Box_Ok := PcbTextBox(TextObj,")
+    assert "W := CoordToMilsF(Box_Right - Box_Left);" in body
     assert "If W > Result Then Result := W;" in body
     # the full text put back after the walk
     assert body.index("TextObj.Text := S;") > body.index("If W > Result Then Result := W;")

@@ -36,9 +36,9 @@ def test_the_helper_takes_the_object_off_the_board_and_back():
 
 def test_the_index_is_asked_at_the_centre_and_two_opposite_corners():
     body = _routine("Utils.pas", "Function", "BoardIndexState")
-    assert "(BR.Left + BR.Right) Div 2" in body
-    assert "BoardIndexFinds(Board, Obj, BR.Left, BR.Bottom)" in body
-    assert "BoardIndexFinds(Board, Obj, BR.Right, BR.Top)" in body
+    assert "(BR_Left + BR_Right) Div 2" in body
+    assert "BoardIndexFinds(Board, Obj, BR_Left, BR_Bottom)" in body
+    assert "BoardIndexFinds(Board, Obj, BR_Right, BR_Top)" in body
     finds = _routine("Utils.pas", "Function", "BoardIndexFinds")
     # The same object, not merely one of its type there.
     assert "I_ObjectAddress" in finds and "AddFilter_Area" in finds

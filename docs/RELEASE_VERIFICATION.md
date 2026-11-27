@@ -1,4 +1,4 @@
-# Release verification: 2026.11.22.1
+# Release verification: 2026.11.27.6
 
 Unless a section records live verification explicitly, the Pascal below has
 been checked by FPC and the linter but **not executed by Altium's DelphiScript engine**. The two are not the
@@ -267,7 +267,7 @@ works elsewhere cannot be an undeclared identifier:
 | 27, new document | `ShowDocument` on the new document | yes, `App_SetActiveDocument` | low |
 | 28, simulation run | `AddStringParameter` with `ObjectKind=Simulator` | yes, `Proj_UpdatePCB` | medium, a process run rather than a write |
 | 28, results saved | `SetFileName`, `DoFileSave` on the results document | yes, `App_CreateDocument` | low |
-| 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | no, nowhere | highest, and it can stop the loop |
+| 28, settings reload | `SupportsReload`, `DoFileLoad`, `UpdateModifiedDate` | yes, `App_ReloadDocument`, a discarding reload in place | highest, and it can stop the loop |
 | 29, slotted hole | `HoleType`, `HoleWidth` on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | high, and it can stop the loop |
 | 29, pad mask expansion | `SolderMaskExpansion`, `SolderMaskExpansionValid` on a pad cache | yes, `PCB_SetViaSoldermaskRelief`, on a via's cache | medium, a library pad is new |
 | 29, non-plated hole | `Plated` on a library pad | read in `PCB.pas`, written nowhere else | medium |
@@ -289,7 +289,7 @@ works elsewhere cannot be an undeclared identifier:
 | 33, poll timer | `Enabled` on the poll timer, read back after arming | yes, `StartMCPPump` writes it | low |
 | 34, 3D body opacity | `BodyOpacity3D` on a component body | yes, `AddExtrudedBody`, on a new extruded body | high, a wrong member name stops the loop; used by several scripts in reference/ |
 | 34, slot rotation | `HoleRotation` written on a library pad | only by `PCBGeneric.pas`, on a board pad, itself new | medium, read on the board side already |
-| 34, pad copper centre | `BoundingRectangle` on a library pad | yes, `BuildViolationJson`, on any primitive | low |
+| 34, pad copper centre | `TopXSize` on a library pad (a BoundingRectangle's fields halt AD 26.12.2, so boxes come from it) | yes, `ApplyPadEdit` | low |
 | 34, pad setter | `SetState_Cache` on a library pad | yes, `Lib_AddFootprintPads` | low |
 | 34, arc mirror | `StartAngle`, `EndAngle` written on a placed arc | yes, `Lib_AddSymbolArc` | low |
 | 35, footprint switch | `SetState_CurrentComponent` on the library, away from the target and back | yes, `Lib_Link3DModel` | low |
@@ -414,7 +414,7 @@ works elsewhere cannot be an undeclared identifier:
 | 52, unpoured pours | `GetDefaultName` on a polygon | no, nowhere | low, names an unnamed pour; ran live |
 | 52, library delete | `GetComponentByName` on the library | yes, `Library.pas` (PcbLibTarget) | medium, removes primitives; ran live after a clean restart |
 | 53, probes | `AddSchObject` of parameters on a probe | yes, on components and parameter sets | low, adds a probe's own parameters; ran live |
-| 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | no, nowhere | low, a .simcfg only; ran live |
+| 53, settings reload | `DoFileLoad` on a settings document reporting `SupportsReload` False | yes, `App_ReloadDocument` (a discarding reload in place) | low, a .simcfg only; ran live |
 | 54, variant values | `DM_AddParameterVariation`, `DM_SetParameterName`, `DM_SetVariedValue`, `DM_RemoveParameterVariation` on a part's variant entry | no, nowhere | low, the .PrjPcb only; ran live, saved and reopened on a scratch copy |
 | 54, variant names | `DM_SetName`, `DM_SetDescription` on an existing variant | yes, `Proj_CreateVariant` on a new one | low, ran live, saved and reopened |
 | 54, current variant | `DM_SetCurrentProjectVariant` on the project | no, nowhere | low, ran live and set back to the base design |
@@ -638,7 +638,7 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.11.22.1`, `version_match` =
+Expect `altium_script_version` = `2026.11.27.6`, `version_match` =
 `true`, and `mcp_server_version` = `0.8.2`.
 
 Those are two different versions and they fail differently.

@@ -30,15 +30,11 @@ def test_the_command_is_routed():
 
 
 def test_the_view_is_read_into_a_typed_record_before_its_fields():
+    # AD 26.12.2: the viewport is a rectangle whose fields halt the
+    # script, so it is reported unknown rather than read.
     body = _fn("PvRectJson")
-    assert "R : TCoordRect;" in body
-    read = body.index("R := Board.GraphicalView_ViewportRect;")
-    for field in ("R.Left", "R.Bottom", "R.Right", "R.Top"):
-        assert body.index(field) > read
-    # internal units to mils, decimals kept
-    assert "R.Left / 10000.0" in body
-    assert "JsonFloat('width', Rt - L)" in body
-    assert "JsonFloat('height', T - B)" in body
+    assert "GraphicalView_ViewportRect" not in body
+    assert '"left":null' in body and "view_note" in body
 
 
 def test_get_is_the_default_and_reads_the_view():
@@ -78,9 +74,8 @@ def test_set_corrects_the_centre_by_one_more_zoom_and_keeps_the_closer():
     # AD 26.11): the first zoom's centre was 3.45 mil off, one shifted zoom
     # brought it to 1.24.
     off = _fn("PvCentreOff")
-    assert "R := Board.GraphicalView_ViewportRect;" in off
-    assert "Ex := Cx - (R.Left + R.Right) / 20000.0;" in off
-    assert "Ey := Cy - (R.Bottom + R.Top) / 20000.0;" in off
+    assert "GraphicalView_ViewportRect" not in off
+    assert "Ex := 0;" in off and "Ey := 0;" in off
     body = _fn("PCB_View")
     first = body.index("PvZoom(Board, L, B, Rt, T);")
     assert "PvCentreOff(Board, Cx, Cy, Ex1, Ey1);" in body[first:]

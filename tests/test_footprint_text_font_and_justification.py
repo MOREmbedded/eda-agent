@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """lib_add_footprint_text takes a TrueType font and a justification.
 
 QPA9903's layout notes on M8 came out in the default font instead of

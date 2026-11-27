@@ -66,7 +66,7 @@ def test_zoom_board_fits_the_outline_with_a_margin():
     pas = _GENERIC.read_text(encoding="utf-8")
     helper = pas[pas.index("Function ZoomOnBoardOutline("):]
     helper = helper[:helper.index("\nFunction ", 10)]
-    assert "Board.BoardOutline.BoundingRectangle" in helper
+    assert "BoardOutlineBox(Board," in helper
     assert "M := (R - L) Div 20;" in helper
     assert "Board.GraphicalView_ZoomOnRect(L - M, B - M, R + M, T + M);" in helper
     body = pas[pas.index("Function Gen_Zoom("):]

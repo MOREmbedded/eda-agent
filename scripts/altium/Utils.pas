@@ -959,6 +959,419 @@ Begin
     Result := Digits > 0;
 End;
 
+{..............................................................................}
+{ Field-free boxes.                                                            }
+{                                                                              }
+{ On AD 26.12.2 BoundingRectangle hands the script an interface whose fields   }
+{ it cannot name: R.Left, R.X1, R.GetLeft and BoundingRectangle.X1 each halt  }
+{ the script with "Undeclared identifier", which no Try catches (measured     }
+{ 2026-11-27 on a footprint pad, a pad box filter and the board). So no unit  }
+{ reads a bounding rectangle: each box here is built from the object's own    }
+{ coordinates, read through a local of the object's own type (DelphiScript    }
+{ resolves a member against the DECLARED type). A box is four integers,       }
+{ left, bottom, right, top, in coords; False and the box untouched when this  }
+{ kind has none here.                                                        }
+{..............................................................................}
+
+{ Raised where a box was wanted and this kind has none here: the code that }
+{ read BoundingRectangle inside a Try skipped such an object when Altium    }
+{ raised, and still does. A conversion error is an exception Try catches,  }
+{ unlike an undeclared identifier.                                         }
+Procedure NoBox(Dummy : Integer);
+Begin
+    Dummy := StrToInt('no box for this kind of object');
+End;
+
+{ Grow L, B, R, T to hold X1..X2 x Y1..Y2 (the first call sets them).      }
+Procedure BoxGrow(Var Has : Boolean; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer; X1 : Integer; Y1 : Integer;
+    X2 : Integer; Y2 : Integer);
+Var
+    Tmp : Integer;
+Begin
+    If X2 < X1 Then Begin Tmp := X1; X1 := X2; X2 := Tmp; End;
+    If Y2 < Y1 Then Begin Tmp := Y1; Y1 := Y2; Y2 := Tmp; End;
+    If Not Has Then
+    Begin
+        L := X1; B := Y1; R := X2; T := Y2;
+        Has := True;
+        Exit;
+    End;
+    If X1 < L Then L := X1;
+    If Y1 < B Then B := Y1;
+    If X2 > R Then R := X2;
+    If Y2 > T Then T := Y2;
+End;
+
+{ A box W wide and H tall whose corner (DX, DY) from its own bottom left   }
+{ sits at (AX, AY), turned Deg degrees about that point.                   }
+Procedure BoxTurned(Var Has : Boolean; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer; AX : Integer; AY : Integer;
+    X0 : Double; Y0 : Double; W : Double; H : Double; Deg : Double);
+Var
+    C, S, X, Y : Double;
+    I : Integer;
+Begin
+    C := Cos(Deg * 3.14159265358979 / 180.0);
+    S := Sin(Deg * 3.14159265358979 / 180.0);
+    For I := 0 To 3 Do
+    Begin
+        If (I = 0) Or (I = 3) Then X := X0 Else X := X0 + W;
+        If I < 2 Then Y := Y0 Else Y := Y0 + H;
+        BoxGrow(Has, L, B, R, T,
+            AX + Round(X * C - Y * S), AY + Round(X * S + Y * C),
+            AX + Round(X * C - Y * S), AY + Round(X * S + Y * C));
+    End;
+End;
+
+{ A region's (or a component body's) box from its outline segments: each   }
+{ vertex, and the whole circle of an arc edge (a little loose, never short).}
+Function RegionVertexBox(Region : IPCB_Region; Var X1 : Integer; Var Y1 : Integer;
+    Var X2 : Integer; Var Y2 : Integer) : Boolean;
+Var
+    Seg : TPolySegment;
+    I, N : Integer;
+    Has : Boolean;
+Begin
+    Has := False;
+    N := 0;
+    Try N := Region.ShapeSegmentCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        Seg := Region.ShapeSegments(I);
+        BoxGrow(Has, X1, Y1, X2, Y2, Seg.vx, Seg.vy, Seg.vx, Seg.vy);
+        If Seg.Kind <> ePolySegmentLine Then
+            BoxGrow(Has, X1, Y1, X2, Y2, Seg.cx - Seg.Radius, Seg.cy - Seg.Radius,
+                Seg.cx + Seg.Radius, Seg.cy + Seg.Radius);
+    End;
+    Result := Has;
+End;
+
+{ A polygon's (or the board outline's) box from its segments.              }
+Function PolygonVertexBox(Poly : IPCB_Polygon; Var X1 : Integer; Var Y1 : Integer;
+    Var X2 : Integer; Var Y2 : Integer) : Boolean;
+Var
+    I, N : Integer;
+    Has : Boolean;
+Begin
+    Has := False;
+    N := 0;
+    Try N := Poly.PointCount; Except N := 0; End;
+    For I := 0 To N - 1 Do
+    Begin
+        BoxGrow(Has, X1, Y1, X2, Y2, Poly.Segments[I].vx, Poly.Segments[I].vy,
+            Poly.Segments[I].vx, Poly.Segments[I].vy);
+        If Poly.Segments[I].Kind <> ePolySegmentLine Then
+            BoxGrow(Has, X1, Y1, X2, Y2,
+                Poly.Segments[I].cx - Poly.Segments[I].Radius,
+                Poly.Segments[I].cy - Poly.Segments[I].Radius,
+                Poly.Segments[I].cx + Poly.Segments[I].Radius,
+                Poly.Segments[I].cy + Poly.Segments[I].Radius);
+    End;
+    Result := Has;
+End;
+
+{ A text's box: its frame for a multiline text, else its height and an     }
+{ estimated width (TrueType: Altium's own measure; stroke: 0.9 x height per }
+{ character), turned about its anchor and flipped when mirrored.           }
+Function PcbTextBox(Txt : IPCB_Text; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    W, H, Deg : Double;
+    S : String;
+    IsTT, Multi, Mirrored : Boolean;
+    Has : Boolean;
+Begin
+    Has := False;
+    S := '';
+    Try S := Txt.UnderlyingString; Except End;
+    If S = '' Then Try S := Txt.Text; Except End;
+    H := 0;
+    Try H := Txt.Size; Except H := 0; End;
+    Deg := 0;
+    Try Deg := Txt.Rotation; Except Deg := 0; End;
+    Multi := False;
+    Try Multi := Txt.Multiline; Except Multi := False; End;
+    IsTT := False;
+    Try IsTT := Txt.UseTTFonts; Except IsTT := False; End;
+    Mirrored := False;
+    Try Mirrored := Txt.MirrorFlag; Except Mirrored := False; End;
+    W := 0;
+    If Multi Then
+    Begin
+        Try W := Txt.MultilineTextWidth; Except W := 0; End;
+        Try H := Txt.MultilineTextHeight; Except End;
+    End
+    Else If IsTT Then
+        Try W := Txt.TTFTextWidth; Except W := 0; End;
+    If W <= 0 Then W := Length(S) * H * 0.9;
+    If Mirrored Then
+        BoxTurned(Has, L, B, R, T, Txt.XLocation, Txt.YLocation, -W, 0, W, H, Deg)
+    Else
+        BoxTurned(Has, L, B, R, T, Txt.XLocation, Txt.YLocation, 0, 0, W, H, Deg);
+    Result := Has;
+End;
+
+{ One primitive that is not a group.                                       }
+Function PcbLeafBox(Obj : IPCB_Primitive; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Kind : Integer;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Fill : IPCB_Fill;
+    Region : IPCB_Region;
+    Txt : IPCB_Text;
+    Poly : IPCB_Polygon;
+    Has : Boolean;
+    Half, Deg : Double;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Obj.ObjectId; Except Kind := -1; End;
+    Has := False;
+    If Kind = ePadObject Then
+    Begin
+        Pad := Obj;
+        Deg := 0;
+        Try Deg := Pad.Rotation; Except Deg := 0; End;
+        BoxTurned(Has, L, B, R, T, Pad.X, Pad.Y, -Pad.TopXSize / 2.0, -Pad.TopYSize / 2.0,
+            Pad.TopXSize, Pad.TopYSize, Deg);
+    End
+    Else If Kind = eViaObject Then
+    Begin
+        Via := Obj;
+        Half := Via.Size / 2.0;
+        BoxGrow(Has, L, B, R, T, Via.X - Round(Half), Via.Y - Round(Half),
+            Via.X + Round(Half), Via.Y + Round(Half));
+    End
+    Else If Kind = eTrackObject Then
+    Begin
+        Track := Obj;
+        Half := Track.Width / 2.0;
+        BoxGrow(Has, L, B, R, T, Track.X1, Track.Y1, Track.X2, Track.Y2);
+        L := L - Round(Half); B := B - Round(Half);
+        R := R + Round(Half); T := T + Round(Half);
+    End
+    Else If Kind = eArcObject Then
+    Begin
+        Arc := Obj;
+        Half := Arc.Radius + Arc.LineWidth / 2.0;
+        BoxGrow(Has, L, B, R, T, Arc.XCenter - Round(Half), Arc.YCenter - Round(Half),
+            Arc.XCenter + Round(Half), Arc.YCenter + Round(Half));
+    End
+    Else If Kind = eFillObject Then
+    Begin
+        Fill := Obj;
+        BoxGrow(Has, L, B, R, T, Fill.X1Location, Fill.Y1Location,
+            Fill.X2Location, Fill.Y2Location);
+    End
+    Else If (Kind = eRegionObject) Or (Kind = eComponentBodyObject) Then
+    Begin
+        Region := Obj;
+        Has := RegionVertexBox(Region, L, B, R, T);
+    End
+    Else If Kind = eTextObject Then
+    Begin
+        Txt := Obj;
+        Has := PcbTextBox(Txt, L, B, R, T);
+    End
+    Else If Kind = ePolyObject Then
+    Begin
+        Poly := Obj;
+        Has := PolygonVertexBox(Poly, L, B, R, T);
+    End;
+    Result := Has;
+End;
+
+{ A group's box (a component, a footprint): the union of its primitives,   }
+{ without texts when WithText is False (its name and comment).            }
+Function PcbGroupBox(Grp : IPCB_Group; WithText : Boolean; Var L : Integer;
+    Var B : Integer; Var R : Integer; Var T : Integer) : Boolean;
+Var
+    It : IPCB_GroupIterator;
+    Child : IPCB_Primitive;
+    CL, CB, CR, CT, Kind : Integer;
+    Has : Boolean;
+Begin
+    Has := False;
+    It := Grp.GroupIterator_Create;
+    Try
+        It.AddFilter_ObjectSet(MkSet(ePadObject, eViaObject, eTrackObject, eArcObject,
+            eFillObject, eRegionObject, eTextObject, eComponentBodyObject, ePolyObject));
+        Child := It.FirstPCBObject;
+        While Child <> Nil Do
+        Begin
+            Kind := -1;
+            Try Kind := Child.ObjectId; Except Kind := -1; End;
+            If WithText Or (Kind <> eTextObject) Then
+                If PcbLeafBox(Child, CL, CB, CR, CT) Then
+                    BoxGrow(Has, L, B, R, T, CL, CB, CR, CT);
+            Child := It.NextPCBObject;
+        End;
+    Finally
+        Grp.GroupIterator_Destroy(It);
+    End;
+    Result := Has;
+End;
+
+{ Any PCB primitive: a component through its group, the rest as a leaf.    }
+{ This replaces Obj.BoundingRectangle everywhere.                          }
+Function PcbBox(Obj : IPCB_Primitive; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Kind : Integer;
+    Grp : IPCB_Group;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Obj.ObjectId; Except Kind := -1; End;
+    If Kind = eComponentObject Then
+    Begin
+        Grp := Obj;
+        Result := PcbGroupBox(Grp, True, L, B, R, T);
+    End
+    Else
+        Result := PcbLeafBox(Obj, L, B, R, T);
+End;
+
+{ A component without its name and comment (BoundingRectangleNoNameComment). }
+Function PcbBoxNoText(Obj : IPCB_Primitive; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Grp : IPCB_Group;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    If Obj.ObjectId = eComponentObject Then
+    Begin
+        Grp := Obj;
+        Result := PcbGroupBox(Grp, False, L, B, R, T);
+    End
+    Else
+        Result := PcbLeafBox(Obj, L, B, R, T);
+End;
+
+{ The board outline's box.                                                 }
+Function BoardOutlineBox(Board : IPCB_Board; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Poly : IPCB_Polygon;
+Begin
+    Result := False;
+    If Board = Nil Then Exit;
+    Poly := Board.BoardOutline;
+    If Poly = Nil Then Exit;
+    Result := PolygonVertexBox(Poly, L, B, R, T);
+End;
+
+{ One schematic object that is not a container.                            }
+Function SchLeafBox(Obj : ISch_GraphicalObject; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Id, N, I, Len : Integer;
+    Rect : ISch_Rectangle;
+    Line : ISch_Line;
+    Pin : ISch_Pin;
+    Sym : ISch_SheetSymbol;
+    Arc : ISch_Arc;
+    Vtx : TLocation;
+    Has : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Id := Obj.ObjectId;
+    Has := False;
+    If (Id = eRectangle) Or (Id = eRoundRectangle) Or (Id = eTextFrame)
+       Or (Id = eNote) Then
+    Begin
+        Rect := Obj;
+        BoxGrow(Has, L, B, R, T, Rect.Location.X, Rect.Location.Y,
+            Rect.Corner.X, Rect.Corner.Y);
+    End
+    Else If Id = eLine Then
+    Begin
+        Line := Obj;
+        BoxGrow(Has, L, B, R, T, Line.Location.X, Line.Location.Y,
+            Line.Corner.X, Line.Corner.Y);
+    End
+    Else If Id = ePin Then
+    Begin
+        Pin := Obj;
+        Len := Pin.PinLength;
+        I := Pin.Orientation;
+        If I = 0 Then BoxGrow(Has, L, B, R, T, Pin.Location.X, Pin.Location.Y, Pin.Location.X + Len, Pin.Location.Y)
+        Else If I = 1 Then BoxGrow(Has, L, B, R, T, Pin.Location.X, Pin.Location.Y, Pin.Location.X, Pin.Location.Y + Len)
+        Else If I = 2 Then BoxGrow(Has, L, B, R, T, Pin.Location.X - Len, Pin.Location.Y, Pin.Location.X, Pin.Location.Y)
+        Else BoxGrow(Has, L, B, R, T, Pin.Location.X, Pin.Location.Y - Len, Pin.Location.X, Pin.Location.Y);
+    End
+    Else If Id = eSheetSymbol Then
+    Begin
+        Sym := Obj;
+        BoxGrow(Has, L, B, R, T, Sym.Location.X, Sym.Location.Y - Sym.YSize,
+            Sym.Location.X + Sym.XSize, Sym.Location.Y);
+    End
+    Else If (Id = eArc) Or (Id = eEllipticalArc) Or (Id = eEllipse) Then
+    Begin
+        Arc := Obj;
+        BoxGrow(Has, L, B, R, T, Arc.Location.X - Arc.Radius, Arc.Location.Y - Arc.Radius,
+            Arc.Location.X + Arc.Radius, Arc.Location.Y + Arc.Radius);
+    End
+    Else If (Id = eWire) Or (Id = eBus) Or (Id = ePolyline) Or (Id = ePolygon)
+       Or (Id = eBezier) Or (Id = eBlanket) Or (Id = eSignalHarness) Then
+    Begin
+        N := 0;
+        Try N := Obj.GetState_VerticesCount; Except N := 0; End;
+        For I := 1 To N Do
+        Begin
+            Vtx := Obj.GetState_Vertex(I);
+            BoxGrow(Has, L, B, R, T, Vtx.X, Vtx.Y, Vtx.X, Vtx.Y);
+        End;
+    End
+    Else
+        BoxGrow(Has, L, B, R, T, Obj.Location.X, Obj.Location.Y,
+            Obj.Location.X, Obj.Location.Y);
+    Result := Has;
+End;
+
+{ Any schematic object: a component or template through its children.      }
+{ This replaces a schematic object's BoundingRectangle everywhere.         }
+Function SchBox(Obj : ISch_GraphicalObject; Var L : Integer; Var B : Integer;
+    Var R : Integer; Var T : Integer) : Boolean;
+Var
+    Id, CL, CB, CR, CT : Integer;
+    It : ISch_Iterator;
+    Child : ISch_GraphicalObject;
+    Has : Boolean;
+Begin
+    Result := False;
+    If Obj = Nil Then Exit;
+    Id := Obj.ObjectId;
+    If (Id = eSchComponent) Or (Id = eTemplate) Then
+    Begin
+        Has := False;
+        It := Obj.SchIterator_Create;
+        Try
+            Child := It.FirstSchObject;
+            While Child <> Nil Do
+            Begin
+                If SchLeafBox(Child, CL, CB, CR, CT) Then
+                    BoxGrow(Has, L, B, R, T, CL, CB, CR, CT);
+                Child := It.NextSchObject;
+            End;
+        Finally
+            Obj.SchIterator_Destroy(It);
+        End;
+        Result := Has;
+    End
+    Else
+        Result := SchLeafBox(Obj, L, B, R, T);
+End;
+
 { What, besides its address, tells one primitive from another, for the     }
 { "seen it already" lists the footprint walks keep: the group iterator can  }
 { yield one object twice, and the address alone separated the repeats. On  }
@@ -1007,7 +1420,7 @@ Begin
     Begin
         Arc := Prim;
         Try Result := Result + '|' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
-            + ',' + IntToStr(Arc.Radius) + ',' + FloatToStr(Arc.StartAngle); Except End;
+            + ',' + IntToStr(Arc.Radius) + ',' + FloatToJsonStr(Arc.StartAngle); Except End;
     End
     Else If Kind = eTextObject Then
     Begin
@@ -1023,7 +1436,7 @@ Begin
     Else If Kind = eRegionObject Then
     Begin
         Region := Prim;
-        Try Result := Result + '|' + FloatToStr(Region.Area); Except End;
+        Try Result := Result + '|' + FloatToJsonStr(Region.Area); Except End;
         Try Result := Result + '|' + IntToStr(Region.ShapeSegmentCount); Except End;
     End;
 End;
@@ -2274,17 +2687,18 @@ End;
 { leaves it so. Altium indexes it that way; 1 is not stale. 0 is.          }
 Function BoardIndexState(Board : IPCB_Board; Obj : IPCB_Primitive) : Integer;
 Var
-    BR : TCoordRect;
+    BR_Left, BR_Bottom, BR_Right, BR_Top : Integer;
+    BR_Ok : Boolean;
     State : Integer;
 Begin
     State := 0;
     If (Board <> Nil) And (Obj <> Nil) Then
     Begin
-        BR := Obj.BoundingRectangle;
-        If BoardIndexFinds(Board, Obj, (BR.Left + BR.Right) Div 2,
-            (BR.Bottom + BR.Top) Div 2) Then State := 1;
-        If BoardIndexFinds(Board, Obj, BR.Left, BR.Bottom) Then
-            If BoardIndexFinds(Board, Obj, BR.Right, BR.Top) Then
+        BR_Ok := PcbBox(Obj, BR_Left, BR_Bottom, BR_Right, BR_Top); If Not BR_Ok Then NoBox(0);
+        If BoardIndexFinds(Board, Obj, (BR_Left + BR_Right) Div 2,
+            (BR_Bottom + BR_Top) Div 2) Then State := 1;
+        If BoardIndexFinds(Board, Obj, BR_Left, BR_Bottom) Then
+            If BoardIndexFinds(Board, Obj, BR_Right, BR_Top) Then
                 State := State + 2;
     End;
     Result := State;

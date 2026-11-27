@@ -61,8 +61,8 @@ def test_the_check_covers_outlines_mask_openings_and_the_board_edge():
     assert re.search(r"Else If Obj\.Layer = SilkLayer Then", body)
     assert re.search(r"\(Obj\.Layer = eMultiLayer\) Or \(Obj\.Layer = CopperSide\)", body)
     # The clearance is the overlap margin, not just the search area.
-    assert re.search(r"RectsOverlap\([^;]*OBB\.Top,\s*Gap\)", body)
-    assert re.search(r"SBB\.Left < BL", body)
+    assert re.search(r"RectsOverlap\([^;]*OBB_Top,\s*Gap\)", body)
+    assert re.search(r"SBB_Left < BL", body)
 
 
 def test_the_clearances_come_from_the_rules_or_the_call_and_never_from_nowhere():

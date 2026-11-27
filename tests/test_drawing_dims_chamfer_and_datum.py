@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """drawing_dims places a land outline's cut corner and an ordinate datum.
 
 Qorvo QPA9903's exposed pad prints "0.14 x 45 deg" on its pin-1 corner,

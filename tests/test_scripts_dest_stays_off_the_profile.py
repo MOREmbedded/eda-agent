@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 r"""The script project has one home, and it is not %USERPROFILE% by accident.
 
 With no Altium install registering a folder, install-scripts and relaunch

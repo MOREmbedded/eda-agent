@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """A generated 3D body goes on the library's "3D Body Top" kind layer.
 
 lib_create_3d_model left the QPA9903 body on Mechanical1, where Altium

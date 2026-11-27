@@ -26,9 +26,9 @@ def _body():
 def test_the_sort_keys_are_the_copper_centre():
     body = _body()
     first = body.index("Pad := GrpIter.FirstPCBObject;")
-    rect = body.index("PadBR := Pad.BoundingRectangle;", first)
-    cx = body.index("CuX := (PadBR.Left + PadBR.Right) Div 2;", rect)
-    cy = body.index("CuY := (PadBR.Bottom + PadBR.Top) Div 2;", rect)
+    rect = body.index("PadBR_Ok := PcbBox(Pad,", first)
+    cx = body.index("CuX := (PadBR_Left + PadBR_Right) Div 2;", rect)
+    cy = body.index("CuY := (PadBR_Bottom + PadBR_Top) Div 2;", rect)
     add_x = body.index("Xs.Add(IntToStr(CuX));", max(cx, cy))
     add_y = body.index("Ys.Add(IntToStr(CuY));", add_x)
     assert first < rect < add_x < add_y
@@ -42,5 +42,5 @@ def test_an_empty_rectangle_keeps_the_origin():
     ox = body.index("CuX := Pad.X;", first)
     oy = body.index("CuY := Pad.Y;", ox)
     guard = body.index(
-        "If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then", oy)
-    assert ox < oy < guard < body.index("CuX := (PadBR.Left")
+        "If (PadBR_Right > PadBR_Left) And (PadBR_Top > PadBR_Bottom) Then", oy)
+    assert ox < oy < guard < body.index("CuX := (PadBR_Left")

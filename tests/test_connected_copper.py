@@ -157,7 +157,7 @@ def test_the_spatial_search_is_filtered_and_destroyed():
     assert ("Sp.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, "
             "ePadObject, eFillObject, eRegionObject));") in body
     assert "Sp.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);" in body
-    assert "Sp.AddFilter_Area(R.Left - Gap, R.Bottom - Gap, R.Right + Gap, R.Top + Gap);" in body
+    assert "Sp.AddFilter_Area(R_Left - Gap, R_Bottom - Gap, R_Right + Gap, R_Top + Gap);" in body
     assert re.search(r"Finally\s+Board\.SpatialIterator_Destroy\(Sp\);", body)
 
 

@@ -22,20 +22,20 @@ def _pcb():
 
 def _safe_placement(body):
     assert not re.search(r"\bBody\.[xy]\b", body, re.I)
-    assert "BeforeBox := Body.BoundingRectangle" in body
-    assert "AfterBox := Body.BoundingRectangle" in body
+    assert "BeforeBox_Ok := RegionVertexBox(Body," in body
+    assert "AfterBox_Ok := RegionVertexBox(Body," in body
     assert "JsonBool('position_verified', PositionOk)" in body
     assert "Abs(ReadBackX - BodyX)" in body
     assert "Abs(ReadBackY - BodyY)" in body
-    assert "AfterBox.Right - BeforeBox.Right" in body
-    assert "AfterBox.Top - BeforeBox.Top" in body
+    assert "AfterBox_Right - BeforeBox_Right" in body
+    assert "AfterBox_Top - BeforeBox_Top" in body
 
 
 def test_body_placement_never_probes_the_missing_xy_members():
     body = _pcb()["PCB_Place3DBody"]
     _safe_placement(body)
     with pytest.raises(AssertionError):
-        _safe_placement(body.replace("BeforeBox := Body.BoundingRectangle;",
+        _safe_placement(body.replace("BeforeBox_Ok := RegionVertexBox(Body,",
                                      "CurX := Body.x;"))
     generic = load(ROOT / "scripts/altium/PCBGeneric.pas")["PCBPrimitivePos"]
     for m in re.finditer(r"\bBody\.[xy]\b", generic, re.I):

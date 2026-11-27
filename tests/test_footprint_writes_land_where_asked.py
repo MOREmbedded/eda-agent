@@ -119,6 +119,6 @@ def test_the_realignment_moves_by_the_origin_difference_once_each():
     body = _routine("AlignCopiedFootprint")
     assert "DX := FootprintOriginX(Dest) - FootprintOriginX(Src)" in body
     assert "DY := FootprintOriginY(Dest) - FootprintOriginY(Src)" in body
-    assert "Seen.IndexOf(Addr) < 0" in body, "a primitive the iterator yields twice moves once"
+    assert "Seen.IndexOf(Addr + PrimKeyTail(Prim)) < 0" in body, "a primitive the iterator yields twice moves once"
     assert "Prims.Free" not in body
     assert body.index("Dest.GroupIterator_Destroy(Iter)") < body.index("Prim.MoveByXY(DX, DY)")
