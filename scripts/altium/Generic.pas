@@ -424,6 +424,23 @@ Begin
     End;
 End;
 
+{ A schematic orientation as Altium stores it, 0..3 (quarter turns), from  }
+{ 0..3 or from degrees 0, 90, 180, 270 (and 360, -90 ...); -1 for anything }
+{ else. Written raw, 270 made a pin Altium could not draw: a .NET dialog,  }
+{ "Unhandled value for pin orientation", on every redraw (2026-11-27).     }
+Function SchOrientationOf(Value : String) : Integer;
+Var
+    N : Integer;
+Begin
+    Result := -1;
+    If Not IsIntStr(Value) Then Exit;
+    N := StrToIntDef(Value, -1);
+    If (N >= 0) And (N <= 3) Then
+        Result := N
+    Else If (N Mod 90) = 0 Then
+        Result := (((N Div 90) Mod 4) + 4) Mod 4;
+End;
+
 Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
 Var
     N : ISch_NoERC;
@@ -451,9 +468,9 @@ Begin
     Begin
         Try N.Symbol := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Symbol'); End;
     End
-    Else If (PropName = 'Orientation') And IsIntStr(Value) Then
+    Else If (PropName = 'Orientation') And (SchOrientationOf(Value) >= 0) Then
     Begin
-        Try N.Orientation := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Orientation'); End;
+        Try N.Orientation := SchOrientationOf(Value); Except NoteWriteFailed('NoERC.Orientation'); End;
     End;
 End;
 
@@ -3966,10 +3983,13 @@ Begin
         // Integer properties
         Else If PropName = 'Orientation' Then
         Begin
-            If SchObjectHasOrientation(Obj) Then
-                Obj.Orientation := StrToIntDef(Value, 0)
+            If Not SchObjectHasOrientation(Obj) Then
+                NotePropertyDiag('unknown', PropName)
+            Else If SchOrientationOf(Value) < 0 Then
+                NotePropertyDiag('failed', 'Orientation=' + Value
+                    + ' (give 0, 90, 180 or 270 degrees, or 0..3)')
             Else
-                NotePropertyDiag('unknown', PropName);
+                Obj.Orientation := SchOrientationOf(Value);
         End
         { A placed part's display mode, refused outside 0 .. count - 1 and  }
         { read back; its current footprint model's pin map, which Altium    }

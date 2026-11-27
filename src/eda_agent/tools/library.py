@@ -8868,7 +8868,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Change existing pads in a PcbLib footprint, only the fields
         given, each read back. Pick pads by ``pad_name`` (every pad of
-        that name), ``selected=True`` (the editor's selection) or ``id``
+        that name; "17#2" the second pad named 17), ``selected=True`` (the editor's selection) or ``id``
         (from ``lib_get_pad_geometry``).
 
         Many pads, different values: ``items``, one dict per pad. Items

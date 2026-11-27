@@ -41,8 +41,9 @@ def test_a_selection_replaces_the_name_match():
     body = _set()
     assert "BySelection := (Str = 'true') Or (Str = '1');" in body
     assert "If (FpWanted = '') Or ((PadWanted = '') And (Not BySelection)) Then" in body
-    assert "((BySelection And Pad.Selected)" in body
-    assert "((Not BySelection)" in body
+    # Collected first, edited after (a change mid-walk ended the walk).
+    assert "If Pad.Selected Then Matched.Add(Pad);" in body
+    assert "Else If UpperCase(Pad.Name) = UpperCase(PadBase) Then" in body
 
 
 def test_a_bad_or_conflicting_hole_type_is_refused_before_anything_is_touched():

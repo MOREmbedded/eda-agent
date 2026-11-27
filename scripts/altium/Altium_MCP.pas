@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.27.2';
+    SCRIPT_VERSION = '2026.11.27.3';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -7637,6 +7637,63 @@ Begin
     End;
 End;
 
+{ The open documents other than FilePath that read modified, by file name,  }
+{ '|' between them, at most eight. Closing a document while others are     }
+{ modified raised Altium's "Confirm Save Locally for (1), Save to Server    }
+{ for (5) Modified Documents" on the owner's screen (AD 26.12.2,           }
+{ 2026-11-27): one answer there writes, or pushes to Altium 365, work this }
+{ server never touched. A close is refused while any such document is open.}
+Function ModifiedInProject(Project : IProject; Skip : String;
+                           Found : String) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Path : String;
+Begin
+    Result := Found;
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(J); Except Doc := Nil; End;
+        If Doc <> Nil Then
+        Begin
+            Path := '';
+            Try Path := Doc.DM_FullPath; Except Path := ''; End;
+            If (Path <> '') And (PathKey(Path) <> Skip)
+               And (Pos('|' + ExtractFileName(Path) + '|', '|' + Result + '|') = 0) Then
+            Begin
+                ServerDoc := Nil;
+                Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+                If ServerDoc <> Nil Then
+                    If ServerDoc.Modified Or DocWasEdited(Path) Then
+                    Begin
+                        If Result <> '' Then Result := Result + '|';
+                        Result := Result + ExtractFileName(Path);
+                    End;
+            End;
+        End;
+    End;
+End;
+
+Function OtherModifiedDocuments(FilePath : String) : String;
+Var
+    Workspace : IWorkspace;
+    I : Integer;
+    Skip : String;
+Begin
+    Result := '';
+    Skip := PathKey(FilePath);
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Try
+        For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            Result := ModifiedInProject(Workspace.DM_Projects(I), Skip, Result);
+    Except End;
+    Try Result := ModifiedInProject(Workspace.DM_FreeDocumentsProject, Skip, Result); Except End;
+End;
+
 { Close ONE document, found by its full path, whatever has the focus.        }
 { WorkspaceManager:CloseObject acts on the FOCUSED object, not the one named: }
 { a close by path once closed a different project. This closes the document }
@@ -7649,7 +7706,7 @@ End;
 { is itself closed without saving.                                          }
 Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath : String;
+    FilePath, Others : String;
     ServerDoc, Again : IServerDocument;
     WasModified, Discard, KeptByProject, Closed : Boolean;
 Begin
@@ -7686,6 +7743,17 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'MODIFIED',
             'The document has unsaved changes, so it was not closed: ' + FilePath);
+        Exit;
+    End;
+    Others := OtherModifiedDocuments(FilePath);
+    If Others <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'OTHERS_MODIFIED',
+            'Not closed: closing a document while others are modified raises '
+            + 'Altium''s save prompt for all of them (save locally or to the '
+            + 'server), and nothing here may answer it. Modified now: '
+            + Others + '. To drop this document''s changes, reload it with '
+            + 'discard_changes, which reloads in place without closing.');
         Exit;
     End;
     If Discard Then
@@ -7810,7 +7878,7 @@ Function App_ReloadDocument(Params : String; RequestId : String) : String;
 Var
     FilePath, DocKind, CloseParams, OpenParams, CloseResp : String;
     ServerDoc : IServerDocument;
-    SaveBeforeClose, DiscardChanges : Boolean;
+    SaveBeforeClose, DiscardChanges, Loaded : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -7856,8 +7924,33 @@ Begin
             Exit;
         End;
     End;
+    { Discarding reloads IN PLACE: the document reads its file again and   }
+    { nothing is closed. Closing it raised Altium's "Confirm Save Locally / }
+    { Save to Server" prompt for every other modified document (2026-11-27). }
+    { When the in-place load is refused, nothing else is tried: the edits   }
+    { stay, and the reply says so.                                         }
+    If DiscardChanges Then
+    Begin
+        Loaded := False;
+        Try ServerDoc.SetModified(False); Except NoteWriteFailed('clear the modified flag before reload'); End;
+        Try Loaded := ServerDoc.DoFileLoad; Except Loaded := False; End;
+        Try ServerDoc.UpdateModifiedDate; Except End;
+        If Not Loaded Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'RELOAD_REFUSED',
+                'Altium did not reload ' + FilePath + ' in place, and it was '
+                + 'not closed instead: a close can raise the save prompt for '
+                + 'every modified document. Close it from its tab without saving.');
+            Exit;
+        End;
+        ForgetDocEdited(FilePath);
+        Try Client.ShowDocument(ServerDoc); Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"file_path":"' + EscapeJsonString(FilePath)
+            + '","reloaded_in_place":true,"closed":false,"discarded":true}');
+        Exit;
+    End;
     CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
-    If DiscardChanges Then CloseParams := CloseParams + ',"discard":"true"';
     CloseParams := CloseParams + '}';
     CloseResp := App_CloseDocument(CloseParams, RequestId);
     If Pos('"success":false', CloseResp) > 0 Then
@@ -32665,7 +32758,6 @@ Var
     ExpVal, ExpBottom : Double;
     ExpSeparate : Boolean;
     PadCache : TPadCache;
-    PadBR : TCoordRect;
     HoleAligned : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -32787,20 +32879,15 @@ Begin
                 Else LayerStr := 'top';
             Except End;
 
-            { x_mm and y_mm are the pad's ORIGIN. A custom pad's copper     }
-            { need not be centred on it, so the copper centre is reported   }
-            { too, from the bounding rectangle: the mask it includes is the }
-            { same on every side, so its centre is the copper's.            }
+            { x_mm and y_mm are the pad's ORIGIN; copper_x/y_mm repeat it.  }
+            { They were the centre of Pad.BoundingRectangle, but on AD      }
+            { 26.12.2 reading that record's Right halts the script with     }
+            { "Undeclared identifier: Right" (Try does not catch it), which }
+            { ended every footprint build's readback (2026-11-27). A land   }
+            { whose copper is off its origin is drawn as a region, which    }
+            { lib_get_footprint_primitives reports.                         }
             CuX := Pad.X;
             CuY := Pad.Y;
-            Try
-                PadBR := Pad.BoundingRectangle;
-                If (PadBR.Right > PadBR.Left) And (PadBR.Top > PadBR.Bottom) Then
-                Begin
-                    CuX := (PadBR.Left + PadBR.Right) Div 2;
-                    CuY := (PadBR.Bottom + PadBR.Top) Div 2;
-                End;
-            Except End;
 
             If Count > 0 Then PadsJson := PadsJson + ',';
             PadsJson := PadsJson +
@@ -33425,8 +33512,9 @@ Var
     Pad : IPCB_Pad;
     Cache : TPadCache;
     SeenPads : TStringList;
-    PadAddr : String;
-    Count, Failed, XOrg, YOrg : Integer;
+    Matched : TInterfaceList;
+    PadAddr, PadBase : String;
+    Count, Failed, XOrg, YOrg, PadNth, Hits, HashAt, I : Integer;
     Ok : Boolean;
 Begin
     LibPath := ExtractJsonValue(Params, 'library_path');
@@ -33510,9 +33598,24 @@ Begin
     Failed := 0;
     Notes := '';
     PadsJson := '';
+    { "17#3" is the third pad named 17, in the footprint's own order: an     }
+    { exposed pad drawn as six lands all numbered 17 is edited one at a time. }
+    PadBase := PadWanted;
+    PadNth := 0;
+    HashAt := Pos('#', PadWanted);
+    If HashAt > 1 Then
+    Begin
+        PadNth := StrToIntDef(Copy(PadWanted, HashAt + 1, Length(PadWanted)), 0);
+        If PadNth > 0 Then PadBase := Copy(PadWanted, 1, HashAt - 1);
+    End;
     SeenPads := TStringList.Create;
+    Matched := TInterfaceList.Create;
     PcbBeginEdit(0);
     Try
+        { The pads are COLLECTED first and changed after: changing a pad    }
+        { while the group iterator walks the footprint ended the walk after }
+        { the first, so six selected pads saw one change (2026-11-27).      }
+        Hits := 0;
         GrpIter := Target.GroupIterator_Create;
         Try
             GrpIter.AddFilter_ObjectSet(MkSet(ePadObject));
@@ -33521,12 +33624,27 @@ Begin
             Begin
                 PadAddr := '';
                 Try PadAddr := IntToStr(Pad.I_ObjectAddress); Except End;
-                If ((PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0))
-                    And ((BySelection And Pad.Selected)
-                         Or ((Not BySelection)
-                             And (UpperCase(Pad.Name) = UpperCase(PadWanted)))) Then
+                If (PadAddr = '') Or (SeenPads.IndexOf(PadAddr) < 0) Then
                 Begin
                     If PadAddr <> '' Then SeenPads.Add(PadAddr);
+                    If BySelection Then
+                    Begin
+                        If Pad.Selected Then Matched.Add(Pad);
+                    End
+                    Else If UpperCase(Pad.Name) = UpperCase(PadBase) Then
+                    Begin
+                        Inc(Hits);
+                        If (PadNth = 0) Or (Hits = PadNth) Then Matched.Add(Pad);
+                    End;
+                End;
+                Pad := GrpIter.NextPCBObject;
+            End;
+        Finally
+            Target.GroupIterator_Destroy(GrpIter);
+        End;
+        For I := 0 To Matched.Count - 1 Do
+        Begin
+                    Pad := Matched.Items[I];
                     Moving := (XStr <> '') Or (YStr <> '');
                     Ok := ApplyPadEdit(Pad, Params, False, XOrg, YOrg, UnitsStr,
                         Not MovedOne, Notes);
@@ -33548,15 +33666,11 @@ Begin
                     If PadsJson <> '' Then PadsJson := PadsJson + ',';
                     PadsJson := PadsJson + PadEditJson(Pad, XOrg, YOrg, Ok);
                     Inc(Count);
-                End;
-                Pad := GrpIter.NextPCBObject;
-            End;
-        Finally
-            Target.GroupIterator_Destroy(GrpIter);
         End;
     Finally
         PcbEndEdit(0);
         Try SeenPads.Free; Except End;
+        Matched := Nil;
     End;
 
     If Count = 0 Then
@@ -81710,6 +81824,23 @@ Begin
     End;
 End;
 
+{ A schematic orientation as Altium stores it, 0..3 (quarter turns), from  }
+{ 0..3 or from degrees 0, 90, 180, 270 (and 360, -90 ...); -1 for anything }
+{ else. Written raw, 270 made a pin Altium could not draw: a .NET dialog,  }
+{ "Unhandled value for pin orientation", on every redraw (2026-11-27).     }
+Function SchOrientationOf(Value : String) : Integer;
+Var
+    N : Integer;
+Begin
+    Result := -1;
+    If Not IsIntStr(Value) Then Exit;
+    N := StrToIntDef(Value, -1);
+    If (N >= 0) And (N <= 3) Then
+        Result := N
+    Else If (N Mod 90) = 0 Then
+        Result := (((N Div 90) Mod 4) + 4) Mod 4;
+End;
+
 Procedure WriteNoErcProp(Obj : ISch_GraphicalObject; PropName : String; Value : String);
 Var
     N : ISch_NoERC;
@@ -81737,9 +81868,9 @@ Begin
     Begin
         Try N.Symbol := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Symbol'); End;
     End
-    Else If (PropName = 'Orientation') And IsIntStr(Value) Then
+    Else If (PropName = 'Orientation') And (SchOrientationOf(Value) >= 0) Then
     Begin
-        Try N.Orientation := StrToIntDef(Value, 0); Except NoteWriteFailed('NoERC.Orientation'); End;
+        Try N.Orientation := SchOrientationOf(Value); Except NoteWriteFailed('NoERC.Orientation'); End;
     End;
 End;
 
@@ -85252,10 +85383,13 @@ Begin
         // Integer properties
         Else If PropName = 'Orientation' Then
         Begin
-            If SchObjectHasOrientation(Obj) Then
-                Obj.Orientation := StrToIntDef(Value, 0)
+            If Not SchObjectHasOrientation(Obj) Then
+                NotePropertyDiag('unknown', PropName)
+            Else If SchOrientationOf(Value) < 0 Then
+                NotePropertyDiag('failed', 'Orientation=' + Value
+                    + ' (give 0, 90, 180 or 270 degrees, or 0..3)')
             Else
-                NotePropertyDiag('unknown', PropName);
+                Obj.Orientation := SchOrientationOf(Value);
         End
         { A placed part's display mode, refused outside 0 .. count - 1 and  }
         { read back; its current footprint model's pin map, which Altium    }

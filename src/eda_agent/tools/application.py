@@ -1588,12 +1588,17 @@ def register_application_tools(mcp):
         save_before_close: bool = False,
         discard_changes: bool = False,
     ) -> dict[str, Any]:
-        """Close and reopen a document so Altium rereads it from disk.
+        """Make Altium reread a document from disk.
 
         This is intended after checkpoint restoration or another external
         file update. By default it refuses to overwrite unsaved in-editor
         edits. Set ``save_before_close=True`` to preserve them, or explicitly
-        set ``discard_changes=True`` to replace them with the disk version.
+        set ``discard_changes=True`` to replace them with the disk version:
+        that reloads IN PLACE, closing nothing, so no save prompt can come up
+        (``reloaded_in_place``); RELOAD_REFUSED when Altium will not. The
+        other paths close and reopen, refused (OTHERS_MODIFIED) while any
+        other open document is modified, because the close would raise
+        Altium's save-locally / save-to-server prompt for all of them.
 
         Args:
             file_path: Absolute path of the document to reload.

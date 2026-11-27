@@ -348,6 +348,63 @@ Begin
     End;
 End;
 
+{ The open documents other than FilePath that read modified, by file name,  }
+{ '|' between them, at most eight. Closing a document while others are     }
+{ modified raised Altium's "Confirm Save Locally for (1), Save to Server    }
+{ for (5) Modified Documents" on the owner's screen (AD 26.12.2,           }
+{ 2026-11-27): one answer there writes, or pushes to Altium 365, work this }
+{ server never touched. A close is refused while any such document is open.}
+Function ModifiedInProject(Project : IProject; Skip : String;
+                           Found : String) : String;
+Var
+    J : Integer;
+    Doc : IDocument;
+    ServerDoc : IServerDocument;
+    Path : String;
+Begin
+    Result := Found;
+    If Project = Nil Then Exit;
+    For J := 0 To Project.DM_LogicalDocumentCount - 1 Do
+    Begin
+        Doc := Nil;
+        Try Doc := Project.DM_LogicalDocuments(J); Except Doc := Nil; End;
+        If Doc <> Nil Then
+        Begin
+            Path := '';
+            Try Path := Doc.DM_FullPath; Except Path := ''; End;
+            If (Path <> '') And (PathKey(Path) <> Skip)
+               And (Pos('|' + ExtractFileName(Path) + '|', '|' + Result + '|') = 0) Then
+            Begin
+                ServerDoc := Nil;
+                Try ServerDoc := Client.GetDocumentByPath(Path); Except ServerDoc := Nil; End;
+                If ServerDoc <> Nil Then
+                    If ServerDoc.Modified Or DocWasEdited(Path) Then
+                    Begin
+                        If Result <> '' Then Result := Result + '|';
+                        Result := Result + ExtractFileName(Path);
+                    End;
+            End;
+        End;
+    End;
+End;
+
+Function OtherModifiedDocuments(FilePath : String) : String;
+Var
+    Workspace : IWorkspace;
+    I : Integer;
+    Skip : String;
+Begin
+    Result := '';
+    Skip := PathKey(FilePath);
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Try
+        For I := 0 To Workspace.DM_ProjectCount - 1 Do
+            Result := ModifiedInProject(Workspace.DM_Projects(I), Skip, Result);
+    Except End;
+    Try Result := ModifiedInProject(Workspace.DM_FreeDocumentsProject, Skip, Result); Except End;
+End;
+
 { Close ONE document, found by its full path, whatever has the focus.        }
 { WorkspaceManager:CloseObject acts on the FOCUSED object, not the one named: }
 { a close by path once closed a different project. This closes the document }
@@ -360,7 +417,7 @@ End;
 { is itself closed without saving.                                          }
 Function App_CloseDocument(Params : String; RequestId : String) : String;
 Var
-    FilePath : String;
+    FilePath, Others : String;
     ServerDoc, Again : IServerDocument;
     WasModified, Discard, KeptByProject, Closed : Boolean;
 Begin
@@ -397,6 +454,17 @@ Begin
     Begin
         Result := BuildErrorResponse(RequestId, 'MODIFIED',
             'The document has unsaved changes, so it was not closed: ' + FilePath);
+        Exit;
+    End;
+    Others := OtherModifiedDocuments(FilePath);
+    If Others <> '' Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'OTHERS_MODIFIED',
+            'Not closed: closing a document while others are modified raises '
+            + 'Altium''s save prompt for all of them (save locally or to the '
+            + 'server), and nothing here may answer it. Modified now: '
+            + Others + '. To drop this document''s changes, reload it with '
+            + 'discard_changes, which reloads in place without closing.');
         Exit;
     End;
     If Discard Then
@@ -521,7 +589,7 @@ Function App_ReloadDocument(Params : String; RequestId : String) : String;
 Var
     FilePath, DocKind, CloseParams, OpenParams, CloseResp : String;
     ServerDoc : IServerDocument;
-    SaveBeforeClose, DiscardChanges : Boolean;
+    SaveBeforeClose, DiscardChanges, Loaded : Boolean;
 Begin
     FilePath := ExtractJsonValue(Params, 'file_path');
     DocKind := ExtractJsonValue(Params, 'kind');
@@ -567,8 +635,33 @@ Begin
             Exit;
         End;
     End;
+    { Discarding reloads IN PLACE: the document reads its file again and   }
+    { nothing is closed. Closing it raised Altium's "Confirm Save Locally / }
+    { Save to Server" prompt for every other modified document (2026-11-27). }
+    { When the in-place load is refused, nothing else is tried: the edits   }
+    { stay, and the reply says so.                                         }
+    If DiscardChanges Then
+    Begin
+        Loaded := False;
+        Try ServerDoc.SetModified(False); Except NoteWriteFailed('clear the modified flag before reload'); End;
+        Try Loaded := ServerDoc.DoFileLoad; Except Loaded := False; End;
+        Try ServerDoc.UpdateModifiedDate; Except End;
+        If Not Loaded Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'RELOAD_REFUSED',
+                'Altium did not reload ' + FilePath + ' in place, and it was '
+                + 'not closed instead: a close can raise the save prompt for '
+                + 'every modified document. Close it from its tab without saving.');
+            Exit;
+        End;
+        ForgetDocEdited(FilePath);
+        Try Client.ShowDocument(ServerDoc); Except End;
+        Result := BuildSuccessResponse(RequestId,
+            '{"success":true,"file_path":"' + EscapeJsonString(FilePath)
+            + '","reloaded_in_place":true,"closed":false,"discarded":true}');
+        Exit;
+    End;
     CloseParams := '{"file_path":"' + EscapeJsonString(FilePath) + '"';
-    If DiscardChanges Then CloseParams := CloseParams + ',"discard":"true"';
     CloseParams := CloseParams + '}';
     CloseResp := App_CloseDocument(CloseParams, RequestId);
     If Pos('"success":false', CloseResp) > 0 Then
