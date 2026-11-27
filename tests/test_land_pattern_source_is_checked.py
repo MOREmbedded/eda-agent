@@ -51,3 +51,13 @@ def test_a_datasheet_with_no_pattern_for_this_package_says_so(datasheet):
 def test_no_path_no_check_and_a_missing_file_is_named(tmp_path):
     assert check_land_source(Citation(page="2")) is None
     assert check_land_source(Citation(page="2", path=str(tmp_path / "x.pdf")))["ok"] is False
+
+
+def test_a_pcb_mounting_pattern_heading_is_a_land_pattern_page(tmp_path):
+    """Qorvo QPA9903 p. 9 is headed "PCB Mounting Pattern"; its captions are
+    in the image. p. 10 ("PC Board Layout") is the evaluation board."""
+    pdf = tmp_path / "qpa.pdf"
+    pdf.write_bytes(_pdf(["Pin configuration", "PCB Mounting Pattern",
+                          "PC Board Layout"]))
+    out = check_land_source(Citation(page="2", path=str(pdf)))
+    assert out["ok"] and 2 in out["land_pattern_pages"]

@@ -80,7 +80,30 @@ _PAD_NAMES = {"EP", "EPAD", "PAD", "EXPOSEDPAD", "THERMALPAD", "TAB", "SLUG"}
 #: Ground pin names, for an exposed pad the table calls ground.
 _GROUND_NAMES = {"GND", "GROUND", "VSS", "AGND", "PGND", "DGND", "EPGND"}
 #: A table row for the exposed pad, which tables print without a number.
-_PAD_ROW = re.compile(r"\b(exposed|thermal|e-?pad|power ?pad|die ?pad|slug)\b", re.I)
+_PAD_ROW = re.compile(
+    r"\b(exposed|thermal|e-?pad|power ?pad|die ?pad|slug|paddle)\b", re.I)
+#: A number cell listing several pins that wraps: "1, 3, 4, 7, 8, 10, 11,"
+#: with the rest of the list, and the row's name, on the next line.
+_OPEN_LIST = re.compile(r"\s*(?:[A-Z]{0,2}\d{1,3}\s*,\s*)+")
+
+
+def _list_rows(lines: list[str]) -> list[str]:
+    """Rows whose list of pin numbers wraps, joined into one line each, so
+    every number in the list meets the row's name (Qorvo QPA9903 p. 8:
+    "1, 3, 4, 7, 8, 10, 11," / "13, 15 GND Ground connection.")."""
+    out = []
+    i = 0
+    while i < len(lines):
+        if not _OPEN_LIST.fullmatch(lines[i]):
+            i += 1
+            continue
+        j = i
+        while (j + 1 < len(lines) and _OPEN_LIST.fullmatch(lines[j])
+               and j - i < _WRAP_LINES):
+            j += 1
+        out.append(" ".join(lines[i:j + 1]))
+        i = j + 1
+    return out
 
 
 def _tokens(lines: list[str]) -> list[tuple[str, str, int]]:
@@ -440,6 +463,7 @@ def check_pin_table(datasheet: Any, pins: list[dict[str, Any]]) -> dict[str, Any
     # A row wrapped onto the next line: only a line that prints no number of
     # its own joins the next, so one row's number never meets the next name.
     wrapped = [f"{a} {b}" for a, b in zip(lines, lines[1:]) if not _ANY_NUMBER.search(a)]
+    wrapped += _list_rows(lines)
     # A package drawing labels a pin as its number alone, the name on the
     # line after. A number labelled so is read with its label and never
     # with the wrapped rows: joined the other way, each name in such a

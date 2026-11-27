@@ -374,3 +374,17 @@ def test_a_package_the_table_does_not_head_names_the_ones_it_does(two_packages):
 def test_a_refusal_without_a_package_column_says_it_can_be_given(sheet):
     out = check_pin_table({"path": sheet, "page": "2"}, _pins(("1", "GND")))
     assert "package_column" in out["reason"]
+
+
+def test_a_wrapped_list_of_pin_numbers_meets_its_rows_name(tmp_path):
+    """Qorvo QPA9903 p. 8: the GND row's number cell wraps after "11,", and
+    the exposed pad is printed as "Backside Paddle" with no number."""
+    pdf = tmp_path / "qpa.pdf"
+    pdf.write_bytes(_pdf([["Pin Description", "Pin No. Label Description",
+                           "1, 3, 4, 7, 8, 10, 11,", "13, 15 GND Ground connection.",
+                           "2 RFIN RF input.", "Backside Paddle GND RF/DC ground."]]))
+    ds = {"path": str(pdf), "page": "1"}
+    gnd = [(n, "GND") for n in ("1", "3", "4", "7", "8", "10", "11", "13", "15")]
+    out = check_pin_table(ds, _pins(*gnd, ("2", "RFIN"), ("17", "GND")))
+    assert out["ok"], out
+    assert not check_pin_table(ds, _pins(("3", "RFIN")))["ok"]

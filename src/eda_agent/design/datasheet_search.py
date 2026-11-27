@@ -18,6 +18,9 @@ LAND_PATTERN_TERMS = (
     "pcb layout", "solder pad", "pcb pad", "mounting pad", "solder land",
     "layout recommendation", "design recommendation", "stencil",
     "recommended pad", "pad dimension", "board layout",
+    # Qorvo heads its land pattern "PCB Mounting Pattern"; the figure
+    # captions are part of the image, so the heading is all the text there is.
+    "mounting pattern", "pcb mounting", "land pattern mask",
 )
 
 #: Lines quoted per page, so a long table cannot flood the reply.
