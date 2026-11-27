@@ -22,7 +22,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.27.1';
+    SCRIPT_VERSION = '2026.11.27.2';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -18666,8 +18666,9 @@ Begin
       The edit is real in memory and absent from disk until app_save_all
       runs, and a caller who does not know that sees a tool that reported
       success and changed no file. }
-    NoteNextStep('This edit is in memory only. Run app_save_all to write '
-        + 'it to disk, and check still_dirty in the reply.');
+    NoteNextStep('This edit is in memory only. Save this library alone with '
+        + 'app_save_document (file_path: the library). Do not use app_save_all: '
+        + 'it writes every open document, not just this one.');
 
     { MARK THE LIBRARY THAT WAS EDITED, NOT WHATEVER HAPPENS TO BE FOCUSED.
       This used to dirty Workspace.DM_FocusedDocument and ignore the SchLib
@@ -18701,7 +18702,7 @@ Begin
               cannot be distinguished from success afterwards. Say so
               instead. }
             NoteNextStep('The edited library is not open as a document, so '
-                + 'it could not be flagged for saving and app_save_all will '
+                + 'it could not be flagged for saving and a save will '
                 + 'skip it. Open it first, then repeat the edit.');
     End
     Else
@@ -24732,7 +24733,7 @@ Begin
         Begin
             Result := BuildErrorResponse(RequestId, 'MODIFIED',
                 'The library has unsaved changes, so it was not reloaded and no '
-                + 'save prompt was raised. Save it (app_save_all), then reload: ' + LibPath);
+                + 'save prompt was raised. Save it (app_save_document on the library), then reload: ' + LibPath);
             Exit;
         End;
         Client.CloseDocument(ServerDoc);
@@ -31077,7 +31078,7 @@ Begin
         ',"deleted":"' + EscapeJsonString(FpWanted) + '"' +
         ',"written_to_disk":false,"pending_save":true' +
         ',"note":"removed in memory and the library marked dirty. The file '
-        + 'still contains it until app_save_all or proj_save flushes."}';
+        + 'still contains it until app_save_document on the library writes it."}';
     Result := BuildSuccessResponse(RequestId, RespJson);
 End;
 

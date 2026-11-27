@@ -192,7 +192,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
                 "lib_create_passive_symbol", "lib_create_3d_model",
                 "obj_switch_view", "lib_link_footprint", "lib_check_pcblib",
                 "lib_get_pad_geometry", "datasheet_find_pages",
-                "datasheet_view_page", "footprint_compare_drawing", "app_save_all"],
+                "datasheet_view_page", "footprint_compare_drawing", "app_save_document"],
         "avoid": [
             ("lib_add_footprint_pads", "pads one by one skip the readback "
                                        "and the drawing check; give the "
@@ -1075,7 +1075,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
             "a name that repeats is set or removed by index. A sheet rule is "
             "a parameter named Rule: add it with rule={\"RULEKIND\": ...}. "
             "System parameters (Title, Author ...) take a value but are not "
-            "removed. Save the sheet afterwards."),
+            "removed. Save the sheet afterwards (app_save_document on it)."),
     },
     {
         "task": "Give a library symbol aliases (other part names)",
@@ -1085,7 +1085,7 @@ _RECIPES: tuple[dict[str, Any], ...] = (
         "backends": ("altium",),
         "use": ["lib_set_symbol_aliases"],
         "avoid": [],
-        "note": "Save the library afterwards.",
+        "note": "Save the library afterwards with app_save_document on it.",
     },
     {
         "task": "Compare the classes and pairs the schematic declares with the board",
