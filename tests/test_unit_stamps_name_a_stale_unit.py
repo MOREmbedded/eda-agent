@@ -72,3 +72,29 @@ def test_a_unit_running_an_old_compile_is_named(tmp_path):
     reported["Library"] = "0123456789ab"
     reported["Main"] = "dev"
     assert script_stamps.stale_units(reported, tmp_path) == (["Library"], ["Main"])
+
+
+def test_with_two_script_projects_open_the_running_copy_is_compared(tmp_path, monkeypatch):
+    """2026-11-27: the profile copy (old) and .eda-local (current, running)
+    were both open; the old one was compared and read as a stale compile."""
+    from eda_agent.tools import application
+
+    def unit(text):
+        return ("Function UnitStamp_Main(Dummy : Integer) : String;\nBegin\n"
+                "    Result := 'dev';\nEnd;\n" + text)
+
+    old, new = tmp_path / "old", tmp_path / "new"
+    for folder, body in ((old, "old;"), (new, "new;")):
+        folder.mkdir()
+        (folder / "Main.pas").write_text(script_stamps.stamp_source(unit(body)))
+    running = script_stamps.unit_stamp(unit("new;"))
+
+    class Bridge:
+        def send_command(self, command, timeout=None):
+            return {"Main": running}
+
+    monkeypatch.setattr(cli, "get_default_scripts_dest", lambda: tmp_path / "none")
+    fields, warnings = application._unit_stamp_check(
+        Bridge(), [str(old / "Altium_API.PrjScr"), str(new / "Altium_API.PrjScr")])
+    assert fields["stale_units"] == [] and warnings == []
+    assert fields["stamps_compared_with"] == str(new)
