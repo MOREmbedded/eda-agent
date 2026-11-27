@@ -363,6 +363,7 @@ NOT_APPLICABLE: dict[str, str] = {
         "altium365_get_project", "altium365_list_components",
         "altium365_list_library_folders", "altium365_list_projects",
         "altium365_list_workspaces", "altium365_publish_library_file",
+        "altium365_create_draft_from_file", "altium365_create_draft_item",
         "altium365_read_object", "altium365_release_component", "altium365_run_query",
         "altium365_set_component_parameters", "altium365_scan_library",
         "altium365_update_library", "altium365_search_library",

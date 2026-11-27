@@ -234,7 +234,7 @@ def publish_operation(kind: str) -> tuple[str, str]:
     name = {"symbol": "desCreateSymbol", "footprint": "desCreateFootprint"}[kind]
     return name, (
         "mutation($fileId: String!, $relativePath: String!, $folderId: ID!, "
-        "$ws: String!, $name: String!) { " + name + "(input: { files: { fileId: "
+        "$ws: String!, $name: String) { " + name + "(input: { files: { fileId: "
         "$fileId, relativePath: $relativePath }, folderId: $folderId, name: $name, "
         "workspaceUrl: $ws }) { errors { message } " + PUBLISHED_ID[name] + " } }")
 

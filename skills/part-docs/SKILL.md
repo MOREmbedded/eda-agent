@@ -75,7 +75,7 @@ A second call for the same part is a cache hit and costs nothing. Pass
   datasheet URL with `datasheet_fetch`. Do not hand it to the person.
 - No STEP model: most makers publish models only through sign-in
   portals. Build the body from the package drawing with
-  `lib_create_3d_model` instead.
+  `lib_create_3d_model` (Altium) instead.
 - No separate package drawing: the datasheet's mechanical section is the
   source (TI and Qorvo put it there).
 - Two package drawings (a part offered in two packages): pick the one

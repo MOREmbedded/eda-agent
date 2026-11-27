@@ -500,3 +500,67 @@ def test_logout_removes_the_saved_login_and_says_when_there_was_none(tmp_path, m
     assert not saved.exists() and "Signed out" in capsys.readouterr().out
     assert server.main() == 0
     assert "No saved Nexar login" in capsys.readouterr().out
+
+
+class _DraftSession:
+    """Stands in for Altium365Session: two folders, and records what is sent."""
+
+    def __init__(self):
+        self.sent = []
+
+    def permitted(self, url):
+        return url
+
+    def list_library_folders(self, ws):
+        return [{"id": "F-DRAFT", "path": "Models/Symbols/__Draft"},
+                {"id": "F-OTHER", "path": "Models/Symbols/Diode"}]
+
+    def require_change(self, name):
+        self.sent.append(("require", name))
+
+    def upload_file(self, path):
+        self.sent.append(("upload", path.name))
+        return "FILE-1"
+
+    def run_change(self, operation, values):
+        self.sent.append(("change", values))
+        return {"desCreateSymbol": {"errors": [], "id": "SYM-1"}}
+
+
+def test_a_draft_item_is_made_only_in_a_draft_folder_and_only_on_confirm(
+        tools, tmp_path, monkeypatch):
+    from eda_agent.tools import altium365 as a365_tools
+    fake = _DraftSession()
+    monkeypatch.setattr(a365_tools, "_session", lambda: fake)
+    lib = tmp_path / "QPA9903.SchLib"
+    lib.write_bytes(b"x")
+    make = tools.get("altium365_create_draft_from_file").fn
+
+    refused = asyncio.run(make("symbol", "https://w/", "Models/Symbols/Diode", str(lib)))
+    assert refused["ok"] is False and "__Draft" in refused["reason"]
+    wrong = asyncio.run(make("footprint", "https://w/", "Models/Footprints/__Draft", str(lib)))
+    assert wrong["ok"] is False and ".pcblib" in wrong["reason"]
+
+    preview = asyncio.run(make("symbol", "https://w/", "models\symbols\__draft", str(lib)))
+    assert preview["ok"] and preview["sent"] is False and preview["folder_id"] == "F-DRAFT"
+    assert preview["name"] == "QPA9903" and fake.sent == []
+
+    made = asyncio.run(make("symbol", "https://w/", "Models/Symbols/__Draft", str(lib),
+                           confirm=True))
+    assert made["ok"] and made["sent"] and made["id"] == "SYM-1"
+    change = [v for k, v in fake.sent if k == "change"][0]
+    assert change["folderId"] == "F-DRAFT" and change["fileId"] == "FILE-1"
+
+
+def test_auto_leaves_the_name_to_the_folder_naming_scheme(tools, tmp_path, monkeypatch):
+    """Item names are unique across a whole workspace, so a footprint named
+    like its symbol is refused (measured live 2026-11-27); "auto" sends null
+    and the folder's naming scheme picks one."""
+    from eda_agent.tools import altium365 as a365_tools
+    monkeypatch.setattr(a365_tools, "_session", lambda: _DraftSession())
+    lib = tmp_path / "QPA9903.SchLib"
+    lib.write_bytes(b"x")
+    preview = asyncio.run(tools.get("altium365_create_draft_from_file").fn(
+        "symbol", "https://w/", "Models/Symbols/__Draft", str(lib), name="auto"))
+    assert preview["name"] is None and preview["variables"]["name"] is None
+    assert "$name: String)" in altium365.publish_operation("symbol")[1]
