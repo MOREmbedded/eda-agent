@@ -1826,7 +1826,9 @@ def _standard_symbol_warnings(components: list[dict]) -> list[dict]:
 
 
 async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
-                                 description: str) -> dict[str, Any]:
+                                 description: str,
+                                 colours: Optional[dict[str, Any]] = None
+                                 ) -> dict[str, Any]:
     """Create a triangle amplifier symbol from AmplifierSymbol geometry.
 
     Per part: the body (triangle or block) FIRST, then the pins, then the
@@ -1852,7 +1854,8 @@ async def _emit_amplifier_symbol(name: str, amp: Any, prefix: str,
             res["block"] = await bridge.send_command_async(
                 "library.add_symbol_rectangle",
                 {"x1": r["x1"], "y1": r["y1"], "x2": r["x2"], "y2": r["y2"],
-                 "fill_color": r["fill_color"], "border_color": 0,
+                 "fill_color": (colours or {}).get("fill", r["fill_color"]),
+                 "border_color": (colours or {}).get("outline", 0),
                  "owner_part_id": r["owner_part_id"]})
         payload, _ = _pins_payload(part["pins"])
         res["pins"] = await bridge.send_command_async(
@@ -2125,6 +2128,41 @@ async def _create_symbol(bridge: Any, params: dict[str, Any]) -> Any:
     return created
 
 
+async def _body_colours(bridge: Any, name: str, fill: Any = "",
+                        outline: Any = "") -> dict[str, Any]:
+    """The fill and outline for a new symbol body: the ones given, else
+    the ones the library's existing symbols use (read from up to three of
+    them), else block yellow and black. Raises ValueError on a bad colour."""
+    from ..design.symbol_colours import body_colours_in, choose, to_bgr
+
+    if to_bgr(fill) is not None and to_bgr(outline) is not None:
+        return choose(fill, outline)
+    learned = None
+    try:
+        path = await _unfocused_schlib(bridge)
+        if not path:
+            active = await bridge.send_command_async("application.get_active_document", {})
+            doc = str(active.get("file_path") or "") if isinstance(active, dict) else ""
+            path = doc if doc.lower().endswith(".schlib") else ""
+        listed = await bridge.send_command_async(
+            "library.get_components", {"library_path": path} if path else {})
+        names = [str(c.get("name") or c.get("lib_reference") or "")
+                 for c in (listed.get("components") or [])
+                 if isinstance(c, dict)] if isinstance(listed, dict) else []
+        names = [n for n in names if n and n != name][:3]
+        geos = []
+        for other in names:
+            params = {"component_name": other}
+            if path:
+                params["library_path"] = path
+            geos.append(await bridge.send_command_async(
+                "library.get_symbol_geometry", params))
+        learned = body_colours_in(geos)
+    except Exception:  # the colours are a nicety; the symbol still gets built
+        learned = None
+    return choose(fill, outline, learned)
+
+
 async def _pin_check(bridge: Any, name: str,
                      pins: list[dict[str, Any]]) -> dict[str, Any]:
     """Read the named symbol's pins back and compare their designators
@@ -2350,6 +2388,8 @@ def register_library_tools(mcp):
         body: str = "auto",
         invert_on_top: bool = False,
         datasheet: Optional[dict[str, Any]] = None,
+        body_fill: str = "",
+        body_outline: str = "",
     ) -> dict[str, Any]:
         """Create a complete IC symbol (body plus every pin) in one call.
         It brings the open SchLib forward itself and fits the new symbol.
@@ -2386,6 +2426,9 @@ def register_library_tools(mcp):
                 A table with a pin-number column per package also takes
                 ``package_column``, the package as the table heads its
                 column ("LQFP48"): only that column's numbers are read.
+            body_fill, body_outline: the body's colours, "#RRGGBB";
+                empty takes the ones this library's symbols already use,
+                else Altium's block yellow and black.
 
         Returns:
             Dict with the symbol name, pin count, ``body`` drawn, body
@@ -2415,8 +2458,12 @@ def register_library_tools(mcp):
                     return {"ok": False, "reason": str(e)}
                 amp = None
             if amp is not None:
+                try:
+                    colours = await _body_colours(get_bridge(), name, body_fill, body_outline)
+                except ValueError as e:
+                    return {"ok": False, "reason": str(e)}
                 made = await _emit_amplifier_symbol(
-                    name, amp, designator_prefix, description)
+                    name, amp, designator_prefix, description, colours)
                 if isinstance(made, dict):
                     made["panel"] = await _refresh_schlib_view(get_bridge(), name)
                 return {**made, **table} if isinstance(made, dict) else made
@@ -2429,6 +2476,10 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": str(e)}
 
         bridge = get_bridge()
+        try:
+            colours = await _body_colours(bridge, name, body_fill, body_outline)
+        except ValueError as e:
+            return {"ok": False, "reason": str(e)}
         created = await _create_symbol(bridge, {
             "name": name,
             "designator_prefix": designator_prefix,
@@ -2454,8 +2505,8 @@ def register_library_tools(mcp):
             {
                 "x1": body["x1"], "y1": body["y1"],
                 "x2": body["x2"], "y2": body["y2"],
-                "fill_color": 8454143,
-                "border_color": 0,
+                "fill_color": colours["fill"],
+                "border_color": colours["outline"],
             },
         )
 
@@ -2492,6 +2543,8 @@ def register_library_tools(mcp):
         pin_pitch: int = 100,
         shared_pins: Optional[dict[str, Any]] = None,
         datasheet: Optional[dict[str, Any]] = None,
+        body_fill: str = "",
+        body_outline: str = "",
     ) -> dict[str, Any]:
         """Create a multi-part IC symbol, each part with its own body, in ONE call.
         It brings the open SchLib forward itself and fits the new symbol.
@@ -2519,6 +2572,9 @@ def register_library_tools(mcp):
                 as wide and tall as needed to hold them.
             datasheet: ``{path, page}`` of the pin table, checked as
                 lib_create_ic_symbol checks it (``package_column`` too).
+            body_fill, body_outline: the body's colours, "#RRGGBB";
+                empty takes the ones this library's symbols already use,
+                else Altium's block yellow and black.
 
         Returns:
             ``symbol``, ``part_count``, ``parts`` (pins and body per part),
@@ -2595,6 +2651,10 @@ def register_library_tools(mcp):
             return {"ok": False, "reason": "one pin per designator; split these: "
                     + ", ".join(grouped)}
         bridge = get_bridge()
+        try:
+            colours = await _body_colours(bridge, name, body_fill, body_outline)
+        except ValueError as e:
+            return {"ok": False, "reason": str(e)}
         created = await _create_symbol(bridge, {
             "name": name, "designator_prefix": designator_prefix,
             "description": description, "part_count": str(len(parts))})
@@ -2604,7 +2664,8 @@ def register_library_tools(mcp):
         # the pins hides their names, and nothing sends it back.
         bodies = [await bridge.send_command_async("library.add_symbol_rectangle", {
             **{corner: geom.body[corner] for corner in ("x1", "y1", "x2", "y2")},
-            "fill_color": 8454143, "border_color": 0, "owner_part_id": str(number)})
+            "fill_color": colours["fill"], "border_color": colours["outline"],
+            "owner_part_id": str(number)})
             for number, geom in enumerate(geoms, 1)]
         placed = [{**pin, "owner_part_id": number}
                   for number, pins in enumerate(geom_pins, 1) for pin in pins]
@@ -3289,7 +3350,8 @@ def register_library_tools(mcp):
                 on the land drawing, and ``drawing_dims`` placing each:
                 {from, to, mm, axis, between centres|outer|gap, or
                 from_edge/to_edge centre|near|far}, {pad, mm, axis} (a
-                land's size); ORIGIN is the centre lines; ``outline``
+                land's size), {pad, chamfer} (an outline's cut corner);
+                ORIGIN is the centre lines, a printed 0 needs no entry; ``outline``
                 [[x, y], ...] for a land that is not a rectangle; and
                 ``compared``, the id footprint_compare_drawing returns
                 once the lands are set beside the figure.
@@ -3359,7 +3421,7 @@ def register_library_tools(mcp):
         if why:
             return {"ok": False, "created": False, "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
                     "reason": why}
-        dim_rows = check_dims(dims, model.pads) if dims else []
+        dim_rows = check_dims(dims, model.pads, spec.custom_pads) if dims else []
         if checking and any(not r["ok"] for r in dim_rows):
             return {"ok": False, "created": False, "drawing_dims": dim_rows,
                     "check": "footprint_drawing", "if_the_user_insists": if_the_user_insists("footprint_drawing"),
@@ -4832,7 +4894,7 @@ def register_library_tools(mcp):
         library, including one opened on its own or kept outside the
         project. Take one before a delete, a batch rename or a plan that
         rewrites a library. It copies the file ON DISK: save first
-        (``app_save_all``) if the editor holds changes you want kept. A copy
+        (``app_save_document`` on it) if the editor holds changes you want kept. A copy
         identical to the newest backup is not stored twice.
 
         Returns:
@@ -6930,7 +6992,7 @@ def register_library_tools(mcp):
         """Copy a component WITHIN or BETWEEN schematic libraries.
 
         Copies pins, graphics and parameters. The destination ends
-        focused with the copy selected; save with ``app_save_all``.
+        focused with the copy selected; save with ``app_save_document`` on the library.
 
         Args:
             source_name: lib_ref of the component to copy.
@@ -7461,7 +7523,7 @@ def register_library_tools(mcp):
     ) -> dict[str, Any]:
         """Delete one symbol from a schematic library (.SchLib).
 
-        Removes one named component; save with app_save_all. An unknown
+        Removes one named component; save with app_save_document. An unknown
         name is COMPONENT_NOT_FOUND.
 
         Args:
@@ -7503,7 +7565,7 @@ def register_library_tools(mcp):
         Also repairs a name a caller cannot type (a quote or control
         character from a broken import): address it by
         ``component_index``. A name another component has is NAME_EXISTS.
-        Save with app_save_all.
+        Save with app_save_document on the library.
 
         For several, give ``items``: a list of {component_name, new_name}
         dicts (component_index works too). Items by name in one library
@@ -7917,7 +7979,7 @@ def register_library_tools(mcp):
         pin, which Altium adds to a net's routed length when it matches
         lengths. Every pin with the designator is set, a pin repeated in
         another display mode too. The edit is in memory until
-        app_save_all.
+        app_save_document on the library.
 
         Args:
             component_name: The symbol in the .SchLib.
@@ -7988,7 +8050,7 @@ def register_library_tools(mcp):
         Number 1", then 2 and on. Every existing one is removed and the
         given links are written from 1, so the list is the whole set; an
         empty list clears them. Other parameters are left alone. The
-        edit is in memory until app_save_all.
+        edit is in memory until app_save_document on the library.
 
         Args:
             component_name: The symbol in the .SchLib.
@@ -8467,7 +8529,7 @@ def register_library_tools(mcp):
         """Delete one footprint from a PCB library (.PcbLib).
 
         Marks the library changed; does NOT write to disk: save with
-        `app_save_all`. An unknown name is FOOTPRINT_NOT_FOUND.
+        `app_save_document`. An unknown name is FOOTPRINT_NOT_FOUND.
 
         Args:
             footprint_name: the footprint's name in the library.
@@ -8604,7 +8666,7 @@ def register_library_tools(mcp):
         Errors if footprint_name is not found or new_name already exists in
         the library.
 
-        MARKS the .PcbLib dirty; it does not write. Call `app_save_all` to
+        MARKS the .PcbLib dirty; it does not write. Call `app_save_document` on it to
         flush, and check what it reports actually reached disk.
 
         Args:
@@ -10070,7 +10132,7 @@ def register_library_tools(mcp):
         Symbols copied from another library keep pointing at it, and
         placements land in <Not Found>. This clears SourceLibraryName,
         sets TargetFileName to '*' and DesignItemId to LibReference.
-        Save with app_save_all.
+        Save with app_save_document on the library.
 
         Args:
             library_path: absolute .SchLib path; empty = focused library.

@@ -394,7 +394,8 @@ def register_footprint_tools(mcp):
                 check_dims, read_dims, read_numbers, unplaced_numbers)
             try:
                 dims = read_dims(raw_dims)
-                rows = check_dims(dims, build_footprint(read_package(package)).pads)
+                spec = read_package(package)
+                rows = check_dims(dims, build_footprint(spec).pads, spec.custom_pads)
                 left = unplaced_numbers(read_numbers(raw_numbers), dims)
             except SpecError as exc:
                 rows, left = [{"ok": False, "why": str(exc)}], []
