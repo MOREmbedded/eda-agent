@@ -959,6 +959,75 @@ Begin
     Result := Digits > 0;
 End;
 
+{ What, besides its address, tells one primitive from another, for the     }
+{ "seen it already" lists the footprint walks keep: the group iterator can  }
+{ yield one object twice, and the address alone separated the repeats. On  }
+{ AD 26.12.2 every footprint read saw only its FIRST object (1 of 22 pads,  }
+{ 1 of 49 primitives, 2026-11-27), as if every object had the same address. }
+{ Kind, layer, name and place are added, so distinct objects never collapse }
+{ into one and the same object yielded twice still does. Only names the     }
+{ shipped walks already read, each in its own Try.                          }
+Function PrimKeyTail(Prim : IPCB_Primitive) : String;
+{ DelphiScript resolves a member against the DECLARED type, so each kind  }
+{ is read through a local of its own type (see GetPCBProperty).          }
+Var
+    Kind : Integer;
+    Pad : IPCB_Pad;
+    Via : IPCB_Via;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Txt : IPCB_Text;
+    Fill : IPCB_Fill;
+    Region : IPCB_Region;
+Begin
+    Result := '';
+    If Prim = Nil Then Exit;
+    Kind := -1;
+    Try Kind := Prim.ObjectId; Except Kind := -1; End;
+    Result := '|' + IntToStr(Kind);
+    Try Result := Result + '|' + IntToStr(Prim.Layer); Except End;
+    If Kind = ePadObject Then
+    Begin
+        Pad := Prim;
+        Try Result := Result + '|' + Pad.Name; Except End;
+        Try Result := Result + '|' + IntToStr(Pad.X) + ',' + IntToStr(Pad.Y); Except End;
+    End
+    Else If Kind = eViaObject Then
+    Begin
+        Via := Prim;
+        Try Result := Result + '|' + IntToStr(Via.X) + ',' + IntToStr(Via.Y); Except End;
+    End
+    Else If Kind = eTrackObject Then
+    Begin
+        Track := Prim;
+        Try Result := Result + '|' + IntToStr(Track.X1) + ',' + IntToStr(Track.Y1)
+            + ',' + IntToStr(Track.X2) + ',' + IntToStr(Track.Y2); Except End;
+    End
+    Else If Kind = eArcObject Then
+    Begin
+        Arc := Prim;
+        Try Result := Result + '|' + IntToStr(Arc.XCenter) + ',' + IntToStr(Arc.YCenter)
+            + ',' + IntToStr(Arc.Radius) + ',' + FloatToStr(Arc.StartAngle); Except End;
+    End
+    Else If Kind = eTextObject Then
+    Begin
+        Txt := Prim;
+        Try Result := Result + '|' + IntToStr(Txt.XLocation) + ',' + IntToStr(Txt.YLocation); Except End;
+    End
+    Else If Kind = eFillObject Then
+    Begin
+        Fill := Prim;
+        Try Result := Result + '|' + IntToStr(Fill.X1Location) + ',' + IntToStr(Fill.Y1Location)
+            + ',' + IntToStr(Fill.X2Location) + ',' + IntToStr(Fill.Y2Location); Except End;
+    End
+    Else If Kind = eRegionObject Then
+    Begin
+        Region := Prim;
+        Try Result := Result + '|' + FloatToStr(Region.Area); Except End;
+        Try Result := Result + '|' + IntToStr(Region.ShapeSegmentCount); Except End;
+    End;
+End;
+
 Function IsIntStr(S : String) : Boolean;
 Var
     I, StartPos : Integer;

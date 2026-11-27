@@ -84,3 +84,17 @@ def test_pads_are_collected_before_they_are_changed():
     edit = body.index("ApplyPadEdit(")
     assert body.index("Target.GroupIterator_Destroy", walk) < edit
     assert "Matched.Add(Pad)" in body and "PadNth" in body
+
+
+def test_footprint_walks_key_on_more_than_the_address():
+    """On AD 26.12.2 every footprint read saw only its first object."""
+    lib = (PAS / "Library.pas").read_text(encoding="utf-8")
+    assert "PrimKeyTail(" in _routine("Utils.pas", "PrimKeyTail")
+    for name in ("Lib_GetPadGeometry", "Lib_GetFootprintPrimitives", "Lib_SetPadProperties"):
+        assert "PrimKeyTail(" in _routine("Library.pas", name), name
+    assert "Ids.IndexOf(PadAddr + " not in lib    # ids stay plain addresses
+
+
+def test_footprint_primitives_read_no_bounding_rectangle():
+    body = _code(_routine("Library.pas", "Lib_GetFootprintPrimitives"))
+    assert "BoundingRectangle" not in body and "TCoordRect" not in body

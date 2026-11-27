@@ -63,8 +63,8 @@ def test_a_row_finds_its_pad_by_id_never_by_name():
 def test_each_pad_is_written_once_and_a_repeat_is_counted():
     body = _bulk()
     write = body[body.index("PcbBeginEdit(0);"):]
-    assert write.index("If Done.IndexOf(PadAddr) >= 0 Then") < write.index("Inc(Repeats)")
-    assert write.index("Done.Add(PadAddr);") < write.index("ApplyPadEdit(")
+    assert write.index("If Done.IndexOf(PadAddr + PrimKeyTail(Pad)) >= 0 Then") < write.index("Inc(Repeats)")
+    assert write.index("Done.Add(PadAddr + PrimKeyTail(Pad));") < write.index("ApplyPadEdit(")
     assert "',\"repeats\":' + IntToStr(Repeats)" in body
 
 
