@@ -101,3 +101,26 @@ def test_the_tool_refuses_a_folder_outside_draft_and_a_saving_entry(monkeypatch)
     assert not out["ok"] and "__Draft" in out["reason"]
     out = asyncio.run(create(folder="Components/__Draft", menu_entry="Save to Server"))
     assert not out["ok"] and "local edit" in out["reason"]
+
+
+class QuickExplorer(FakeExplorer):
+    """Answers rows_named, and fails the test if every row is read."""
+
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.full_reads = 0
+
+    def rows_named(self, grid, name):
+        return [r for r in super().visible_folders(grid) if r["name"] == name]
+
+    def visible_folders(self, grid):
+        self.full_reads += 1
+        return super().visible_folders(grid)
+
+
+def test_each_level_is_one_query_by_name_not_a_read_of_every_row():
+    fake = QuickExplorer(TREE)
+    got = explorer.goto_folder(fake, "Models/__Draft")
+    assert got["ok"] and fake.selected == "__Draft"
+    assert fake.full_reads == 0
+    assert got["center"][1] == 6 * 20 + 9      # Models' __Draft, not Components'

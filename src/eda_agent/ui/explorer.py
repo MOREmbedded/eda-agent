@@ -113,6 +113,33 @@ class Explorer:
                 continue
         return sorted(rows, key=lambda r: r["top"])
 
+    def rows_named(self, grid, name: str) -> list[dict]:
+        """Folder rows whose label is exactly ``name``, found with one UIA
+        query on the label's Name, each as visible_folders gives it."""
+        U, uia = self.U, self.uia
+        try:
+            condition = uia.CreateAndCondition(
+                uia.CreatePropertyCondition(U.UIA_ControlTypePropertyId, TEXT),
+                uia.CreatePropertyCondition(U.UIA_NamePropertyId, name))
+            found = grid.FindAll(U.TreeScope_Descendants, condition)
+        except Exception:                        # noqa: BLE001
+            return []
+        rows = []
+        for i in range(found.Length):
+            try:
+                text = found.GetElement(i)
+                row = self.walker.GetParentElement(text)
+                while row is not None and row.CurrentControlType != TREE_ITEM:
+                    row = self.walker.GetParentElement(row)
+                if row is None:
+                    continue
+                rows.append({"name": name, "indent": int(text.CurrentBoundingRectangle.left),
+                             "top": int(row.CurrentBoundingRectangle.top),
+                             "key": tuple(row.GetRuntimeId()), "element": row})
+            except Exception:                    # noqa: BLE001
+                continue
+        return rows
+
     def expand(self, row) -> bool:
         """Expand a collapsed row; True when it was collapsed."""
         U = self.U
@@ -367,11 +394,22 @@ def is_draft_path(path: str) -> bool:
 
 
 def _find_row(explorer: Explorer, grid, name: str, below_indent: Optional[int],
-              max_scrolls: int = 40) -> Optional[dict]:
+              max_scrolls: int = 40, below_top: Optional[int] = None) -> Optional[dict]:
     """The first folder row named ``name`` deeper than ``below_indent``,
     looking at the rows on screen first and scrolling only when it is not
     there. Matches the name without case."""
     want = name.strip().lower()
+    # Fast path: one UIA query for the folder label by its name, instead of
+    # reading every row's label (which cost seconds per level on a real
+    # workspace). Only rows already realised are found this way; the scan
+    # below still covers a row scrolled out of view.
+    quick = getattr(explorer, "rows_named", None)
+    if quick is not None:
+        candidates = [r for r in quick(grid, name.strip())
+                      if (below_indent is None or r["indent"] > below_indent)
+                      and (below_top is None or r["top"] > below_top)]
+        if candidates:
+            return min(candidates, key=lambda r: r["top"])
 
     def look() -> Optional[dict]:
         for row in explorer.visible_folders(grid):
@@ -411,15 +449,16 @@ def goto_folder(explorer: Explorer, path: str, opened: Optional[list] = None,
     if not parts:
         return {"ok": False, "reason": "give the folder path, e.g. Components/__Draft"}
     indent: Optional[int] = None
+    top: Optional[int] = None
     row: Optional[dict] = None
     for depth, name in enumerate(parts):
-        row = _find_row(explorer, grid, name, indent)
+        row = _find_row(explorer, grid, name, indent, below_top=top)
         if row is None:
             seen = [r["name"] for r in explorer.visible_folders(grid)][:40]
             return {"ok": False, "reason": (
                 f"no folder {name!r} under {'/'.join(parts[:depth]) or 'the workspace'}"),
                 "visible": seen}
-        indent = row["indent"]
+        indent, top = row["indent"], row["top"]
         if depth < len(parts) - 1 and explorer.expand(row["element"]):
             if opened is not None:
                 opened.append(row["key"])

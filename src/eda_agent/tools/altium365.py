@@ -332,14 +332,19 @@ def register_altium365_tools(mcp) -> None:
             return problem
         if not panels.available() or not menu.available():
             return {"ok": False, "reason": "UI automation is unavailable here"}
+        import time
+        started = time.monotonic()
         at = await asyncio.to_thread(panels.on_com_thread,
                                      lambda: explorer.select_folder(folder))
+        found_in = round(time.monotonic() - started, 2)
         if not at.get("ok"):
-            return at
+            return {**at, "seconds": found_in}
         x, y = at["center"]
         if not menu_entry.strip():
             got = await asyncio.to_thread(menu.context_menu, pid, x, y)
-            return {**got, "folder": at["path"], "center": [x, y]}
+            return {**got, "folder": at["path"], "center": [x, y],
+                    "folder_seconds": found_in,
+                    "seconds": round(time.monotonic() - started, 2)}
         got = await asyncio.to_thread(menu.context_click, pid, x, y, menu_entry)
         if not got.get("ok"):
             return {**got, "folder": at["path"]}
