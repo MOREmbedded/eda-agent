@@ -1073,6 +1073,7 @@ def lint_file(path: str) -> list[Finding]:
     findings.extend(_scan_if_then_try(rel, raw_lines))
     findings.extend(_scan_reserved_in_var_block(rel, raw_lines))
     findings.extend(_scan_param_redeclared_as_local(rel, raw_lines))
+    findings.extend(_scan_local_declared_twice(rel, raw_lines))
     findings.extend(_scan_dollar_i(rel, text))
     findings.extend(_scan_unbracketed_comparison(rel, text))
     findings.extend(_scan_call_before_definition(rel, raw_lines))
@@ -1407,6 +1408,50 @@ def _scan_param_redeclared_as_local(path: str, lines: list[str]) -> list[Finding
                             snippet=lines[j],
                             memory="delphiscript_reserved_words.md",
                         ))
+            j += 1
+        i = j
+    return findings
+
+
+#: A local declared twice in the same Var block.
+#:
+#: DelphiScript rejects the whole script with "Identifier redeclared". A
+#: merge produced exactly this in PCB_GetComponents (BodyJson on two lines
+#: of one Var block), and the bridge would not compile at all until fixed.
+_VAR_ALONE = re.compile(r"^\s*Var\s*$", re.IGNORECASE)
+_VAR_BLOCK_END = re.compile(
+    r"^\s*(Begin|Function|Procedure|Type|Const|Var)\b", re.IGNORECASE)
+
+
+def _scan_local_declared_twice(path: str, lines: list[str]) -> list[Finding]:
+    """Names that appear twice in one Var block."""
+    findings: list[Finding] = []
+    i = 0
+    while i < len(lines):
+        if not _VAR_ALONE.match(strip_comments_and_strings(lines[i])):
+            i += 1
+            continue
+        seen: set[str] = set()
+        j = i + 1
+        while j < len(lines):
+            line = strip_comments_and_strings(lines[j])
+            if _VAR_BLOCK_END.match(line):
+                break
+            if ":" in line:
+                for name in line.split(":")[0].split(","):
+                    name = name.strip()
+                    if not name.isidentifier():
+                        continue
+                    if name.lower() in seen:
+                        findings.append(Finding(
+                            file=path, line=j + 1,
+                            col=line.lower().index(name.lower()) + 1,
+                            rule="local-declared-twice",
+                            severity="error",
+                            snippet=lines[j],
+                            memory="delphiscript_reserved_words.md",
+                        ))
+                    seen.add(name.lower())
             j += 1
         i = j
     return findings

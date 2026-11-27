@@ -3179,7 +3179,6 @@ Var
     First, HasPlacementBBox : Boolean;
     Count : Integer;
     HeightMils, BBoxX1, BBoxY1, BBoxX2, BBoxY2, BBoxW, BBoxH : Double;
-    BodyJson : String;
     BodyMode, BodyList, HeightJson : String;
     WantList : Boolean;
     MaxOverall, BodyCount, StepCount : Integer;
