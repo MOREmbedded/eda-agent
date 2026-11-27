@@ -290,6 +290,67 @@ def register_altium365_tools(mcp) -> None:
         return {"ok": True, **save_models3d(db, url, got)}
 
     @mcp.tool()
+    async def altium365_create_draft_item(folder: str, menu_entry: str = "") -> dict[str, Any]:
+        """Create a new workspace item (a symbol, footprint or component)
+        the way Explorer does: right click a __Draft folder and pick its
+        create entry. Nothing is ever saved to the server.
+
+        ONLY in a __Draft folder: a folder path with no part starting
+        "__Draft" is refused. The folder is reached by expanding only the
+        folders on its path, so it takes seconds, not a walk of the tree.
+
+        With no ``menu_entry`` this reads the folder's context menu and
+        closes it, choosing nothing: run it first to see the entry names.
+        With one, that entry is chosen ('|' for a submenu, e.g.
+        "Create Item|Symbol") and the dialog Altium raises is reported,
+        unanswered. Entries that save, release, publish or delete are
+        refused.
+
+        Args:
+            folder: The folder's path in Explorer's tree, e.g.
+                "Components/__Draft" (case ignored).
+            menu_entry: The context-menu entry to choose, or "" to list.
+
+        Returns:
+            ``{ok, folder, center, items}`` when listing;
+            ``{ok, folder, chose, dialogs}`` after choosing.
+        """
+        from ..ui import dialog_report, explorer, menu, panels
+        from .uiauto import _altium_pid
+
+        if not explorer.is_draft_path(folder):
+            return {"ok": False, "reason": (
+                f"{folder!r} is not a __Draft folder: new items are made only in "
+                "a workspace's __Draft folders")}
+        risky = ("save", "server", "release", "publish", "delete", "remove", "upload")
+        if any(word in menu_entry.lower() for word in risky):
+            return {"ok": False, "reason": (
+                f"{menu_entry!r} could save, release or delete: this tool only "
+                "creates an item and leaves it as a local edit")}
+        pid, problem = _altium_pid()
+        if problem is not None:
+            return problem
+        if not panels.available() or not menu.available():
+            return {"ok": False, "reason": "UI automation is unavailable here"}
+        at = await asyncio.to_thread(panels.on_com_thread,
+                                     lambda: explorer.select_folder(folder))
+        if not at.get("ok"):
+            return at
+        x, y = at["center"]
+        if not menu_entry.strip():
+            got = await asyncio.to_thread(menu.context_menu, pid, x, y)
+            return {**got, "folder": at["path"], "center": [x, y]}
+        got = await asyncio.to_thread(menu.context_click, pid, x, y, menu_entry)
+        if not got.get("ok"):
+            return {**got, "folder": at["path"]}
+        await asyncio.sleep(1.5)
+        seen = await asyncio.to_thread(dialog_report.report, pid)
+        return {"ok": True, "folder": at["path"], "chose": menu_entry,
+                "dialogs": seen.get("dialogs") or [],
+                "next_step": ("fill the dialog with app_set_dialog_control and keep "
+                              "the item a local edit; never press Save to Server")}
+
+    @mcp.tool()
     async def altium365_publish_library_file(kind: str, workspace_url: str, folder_id: str,
                                              name: str, file_path: str,
                                              confirm: bool = False) -> dict[str, Any]:
